@@ -10,9 +10,15 @@ import (
 	"strings"
 )
 
+type Function struct {
+	params []*ast.Field
+	body   *ast.BlockStmt
+}
+
 type Interpreter struct {
 	scope     *Scope
-	funcTable map[string]reflect.Value
+	funcTable map[string]reflect.Value // 内置函数表
+	userFuncs map[string]*Function     // 用户定义的函数表
 }
 
 type Scope struct {
@@ -27,6 +33,7 @@ func NewInterpreter() *Interpreter {
 	return &Interpreter{
 		scope:     globalScope,
 		funcTable: make(map[string]reflect.Value),
+		userFuncs: make(map[string]*Function),
 	}
 }
 
@@ -35,11 +42,9 @@ func (i *Interpreter) RegisterFunction(name string, fn interface{}) {
 }
 
 func (i *Interpreter) Interpret(code string) (interface{}, error) {
-	// 使用parser.ParseFile来解析完整的代码
 	fset := token.NewFileSet()
-	code = `
-	package main
-
+	code = `package main
+	
 	` + code + `
 	`
 	f, err := parser.ParseFile(fset, "", code, parser.Mode(0))
@@ -47,9 +52,28 @@ func (i *Interpreter) Interpret(code string) (interface{}, error) {
 		return nil, err
 	}
 
-	// 获取main函数中的代码块
-	mainFunc := f.Decls[0].(*ast.FuncDecl)
-	return i.eval(mainFunc.Body)
+	// 首先处理所有函数定义
+	for _, decl := range f.Decls {
+		if funcDecl, ok := decl.(*ast.FuncDecl); ok {
+			if funcDecl.Name.Name != "__main__" {
+				i.userFuncs[funcDecl.Name.Name] = &Function{
+					params: funcDecl.Type.Params.List,
+					body:   funcDecl.Body,
+				}
+			}
+		}
+	}
+
+	// 查找并执行 __main__ 函数
+	for _, decl := range f.Decls {
+		if funcDecl, ok := decl.(*ast.FuncDecl); ok {
+			if funcDecl.Name.Name == "__main__" {
+				return i.eval(funcDecl.Body)
+			}
+		}
+	}
+
+	return nil, fmt.Errorf("没有找到 __main__ 函数")
 }
 
 func (i *Interpreter) eval(node ast.Node) (interface{}, error) {
@@ -282,34 +306,58 @@ func (i *Interpreter) evalAssignStmt(assign *ast.AssignStmt) (interface{}, error
 
 // 处理函数调用
 func (i *Interpreter) evalCallExpr(call *ast.CallExpr) (interface{}, error) {
-	// 获取函数名
 	fnIdent, ok := call.Fun.(*ast.Ident)
 	if !ok {
 		return nil, fmt.Errorf("不支持的函数表达式类型")
 	}
 
-	// 查找注册函数
-	fn, exists := i.funcTable[fnIdent.Name]
-	if !exists {
-		return nil, fmt.Errorf("未注册函数: %s", fnIdent.Name)
-	}
-
-	// 评估参数
-	args := make([]reflect.Value, len(call.Args))
-	for idx, argExpr := range call.Args {
-		argVal, err := i.eval(argExpr)
-		if err != nil {
-			return nil, err
+	// 先检查是否是内置函数
+	if fn, exists := i.funcTable[fnIdent.Name]; exists {
+		args := make([]reflect.Value, len(call.Args))
+		for idx, argExpr := range call.Args {
+			argVal, err := i.eval(argExpr)
+			if err != nil {
+				return nil, err
+			}
+			args[idx] = reflect.ValueOf(argVal)
 		}
-		args[idx] = reflect.ValueOf(argVal)
+		results := fn.Call(args)
+		if len(results) == 0 {
+			return nil, nil
+		}
+		return results[0].Interface(), nil
 	}
 
-	// 调用函数
-	results := fn.Call(args)
-	if len(results) == 0 {
-		return nil, nil
+	// 检查是否是用户定义的函数
+	if userFunc, exists := i.userFuncs[fnIdent.Name]; exists {
+		// 创建新的作用域
+		prevScope := i.scope
+		newScope := &Scope{
+			parent:  prevScope,
+			objects: make(map[string]interface{}),
+		}
+		i.scope = newScope
+		defer func() { i.scope = prevScope }()
+
+		// 处理参数
+		if len(call.Args) != len(userFunc.params) {
+			return nil, fmt.Errorf("函数 %s 参数数量不匹配", fnIdent.Name)
+		}
+
+		// 绑定参数到新作用域
+		for idx, param := range userFunc.params {
+			argVal, err := i.eval(call.Args[idx])
+			if err != nil {
+				return nil, err
+			}
+			newScope.objects[param.Names[0].Name] = argVal
+		}
+
+		// 执行函数体
+		return i.eval(userFunc.body)
 	}
-	return results[0].Interface(), nil
+
+	return nil, fmt.Errorf("未定义的函数: %s", fnIdent.Name)
 }
 
 // 处理二元表达式
@@ -650,6 +698,11 @@ func main() {
 
 	// 执行复杂逻辑
 	code := `
+	func xxx(){
+		print("success")
+	}
+	func __main__() any {
+	xxx()
 sum := 0
 for i := 1; i <= 5; i++ {
 	if i % 2 == 0 {
@@ -660,7 +713,9 @@ for i := 1; i <= 5; i++ {
 		print(sum)
 	}
 }
+	xxx()
 	return sum
+		}
 `
 
 	result, err := interp.Interpret(code)
