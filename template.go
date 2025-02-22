@@ -1,0 +1,671 @@
+package main
+
+import (
+	"fmt"
+	"go/ast"
+	"go/parser"
+	"go/token"
+	"reflect"
+	"strconv"
+	"strings"
+)
+
+type Interpreter struct {
+	scope     *Scope
+	funcTable map[string]reflect.Value
+}
+
+type Scope struct {
+	parent  *Scope
+	objects map[string]interface{}
+}
+
+func NewInterpreter() *Interpreter {
+	globalScope := &Scope{
+		objects: make(map[string]interface{}),
+	}
+	return &Interpreter{
+		scope:     globalScope,
+		funcTable: make(map[string]reflect.Value),
+	}
+}
+
+func (i *Interpreter) RegisterFunction(name string, fn interface{}) {
+	i.funcTable[name] = reflect.ValueOf(fn)
+}
+
+func (i *Interpreter) Interpret(code string) (interface{}, error) {
+	// 使用parser.ParseFile来解析完整的代码
+	fset := token.NewFileSet()
+	code = `
+	package main
+
+	` + code + `
+	`
+	f, err := parser.ParseFile(fset, "", code, parser.Mode(0))
+	if err != nil {
+		return nil, err
+	}
+
+	// 获取main函数中的代码块
+	mainFunc := f.Decls[0].(*ast.FuncDecl)
+	return i.eval(mainFunc.Body)
+}
+
+func (i *Interpreter) eval(node ast.Node) (interface{}, error) {
+	switch n := node.(type) {
+	case *ast.BasicLit:
+		return i.evalBasicLit(n)
+	case *ast.Ident:
+		return i.evalIdent(n)
+	case *ast.BinaryExpr:
+		return i.evalBinaryExpr(n)
+	case *ast.CallExpr:
+		return i.evalCallExpr(n)
+	case *ast.ParenExpr:
+		return i.eval(n.X)
+	case *ast.BlockStmt:
+		return i.evalBlockStmt(n)
+	case *ast.ForStmt:
+		return i.evalForStmt(n)
+	case *ast.IfStmt:
+		return i.evalIfStmt(n)
+	case *ast.AssignStmt:
+		return i.evalAssignStmt(n)
+	case *ast.ReturnStmt:
+		return i.evalReturnStmt(n)
+	case *ast.IncDecStmt:
+		return i.evalIncDecStmt(n)
+	case *ast.ExprStmt:
+		return i.eval(n.X)
+	default:
+		return nil, fmt.Errorf("unsupported node type: %T", node)
+	}
+}
+
+// 基础类型处理
+func (i *Interpreter) evalBasicLit(lit *ast.BasicLit) (interface{}, error) {
+	switch lit.Kind {
+	case token.INT:
+		return strconv.Atoi(lit.Value)
+	case token.STRING:
+		return strings.Trim(lit.Value, `"`), nil
+	case token.FLOAT:
+		return strconv.ParseFloat(lit.Value, 64)
+	default:
+		return nil, fmt.Errorf("unsupported literal type: %s", lit.Kind)
+	}
+}
+
+// 处理标识符（变量/常量）
+func (i *Interpreter) evalIdent(ident *ast.Ident) (interface{}, error) {
+	// 先检查是否是预定义常量
+	switch ident.Name {
+	case "true":
+		return true, nil
+	case "false":
+		return false, nil
+	case "nil":
+		return nil, nil
+	}
+
+	// 作用域链查找
+	currentScope := i.scope
+	for currentScope != nil {
+		if val, ok := currentScope.objects[ident.Name]; ok {
+			return val, nil
+		}
+		currentScope = currentScope.parent
+	}
+
+	// 最后检查是否是注册函数
+	if _, ok := i.funcTable[ident.Name]; ok {
+		return nil, fmt.Errorf("函数%s需要括号调用", ident.Name)
+	}
+
+	return nil, fmt.Errorf("未定义的标识符: %s", ident.Name)
+}
+
+// 处理代码块
+func (i *Interpreter) evalBlockStmt(block *ast.BlockStmt) (interface{}, error) {
+	// 创建新的作用域
+	prevScope := i.scope
+	i.scope = &Scope{
+		parent:  prevScope,
+		objects: make(map[string]interface{}),
+	}
+	defer func() { i.scope = prevScope }() // 确保作用域恢复
+
+	var result interface{}
+	var err error
+
+	for _, stmt := range block.List {
+		result, err = i.eval(stmt)
+		if err != nil {
+			return nil, err
+		}
+	}
+	return result, nil
+}
+
+// 处理for循环
+func (i *Interpreter) evalForStmt(f *ast.ForStmt) (interface{}, error) {
+	// 初始化语句
+	if f.Init != nil {
+		_, err := i.eval(f.Init)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	for {
+		// 检查终止条件
+		if f.Cond != nil {
+			cond, err := i.eval(f.Cond)
+			if err != nil {
+				return nil, err
+			}
+			if !toBool(cond) {
+				break
+			}
+		}
+
+		// 执行循环体
+		_, err := i.eval(f.Body)
+		if err != nil {
+			return nil, err
+		}
+
+		// 执行后续操作
+		if f.Post != nil {
+			_, err := i.eval(f.Post)
+			if err != nil {
+				return nil, err
+			}
+		}
+	}
+	return nil, nil
+}
+
+// 处理if语句
+func (i *Interpreter) evalIfStmt(ifStmt *ast.IfStmt) (interface{}, error) {
+	// 初始化语句（如 if x := ...; x > 0 {}）
+	if ifStmt.Init != nil {
+		_, err := i.eval(ifStmt.Init)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	// 评估条件
+	cond, err := i.eval(ifStmt.Cond)
+	if err != nil {
+		return nil, err
+	}
+
+	if toBool(cond) {
+		return i.eval(ifStmt.Body)
+	} else if ifStmt.Else != nil {
+		return i.eval(ifStmt.Else)
+	}
+	return nil, nil
+}
+
+// 处理赋值语句
+func (i *Interpreter) evalAssignStmt(assign *ast.AssignStmt) (interface{}, error) {
+	// 处理右侧表达式
+	values := make([]interface{}, len(assign.Rhs))
+	for idx, expr := range assign.Rhs {
+		val, err := i.eval(expr)
+		if err != nil {
+			return nil, err
+		}
+		values[idx] = val
+	}
+
+	switch assign.Tok {
+	case token.DEFINE: // :=
+		for idx, lhs := range assign.Lhs {
+			ident, ok := lhs.(*ast.Ident)
+			if !ok {
+				return nil, fmt.Errorf("非左值表达式")
+			}
+			i.scope.objects[ident.Name] = values[idx]
+		}
+	case token.ASSIGN: // =
+		for idx, lhs := range assign.Lhs {
+			ident, ok := lhs.(*ast.Ident)
+			if !ok {
+				return nil, fmt.Errorf("非左值表达式")
+			}
+			currentScope := i.scope
+			for currentScope != nil {
+				if _, ok := currentScope.objects[ident.Name]; ok {
+					currentScope.objects[ident.Name] = values[idx]
+					break
+				}
+				currentScope = currentScope.parent
+			}
+		}
+	case token.ADD_ASSIGN: // +=
+		for idx, lhs := range assign.Lhs {
+			ident, ok := lhs.(*ast.Ident)
+			if !ok {
+				return nil, fmt.Errorf("非左值表达式")
+			}
+			// 获取当前值
+			currentVal, err := i.evalIdent(ident)
+			if err != nil {
+				return nil, err
+			}
+			// 计算新值
+			newVal, err := add(currentVal, values[idx])
+			if err != nil {
+				return nil, err
+			}
+			// 更新值
+			currentScope := i.scope
+			for currentScope != nil {
+				if _, ok := currentScope.objects[ident.Name]; ok {
+					currentScope.objects[ident.Name] = newVal
+					break
+				}
+				currentScope = currentScope.parent
+			}
+		}
+	default:
+		return nil, fmt.Errorf("不支持的赋值操作符: %s", assign.Tok)
+	}
+
+	return values, nil
+}
+
+// 处理函数调用
+func (i *Interpreter) evalCallExpr(call *ast.CallExpr) (interface{}, error) {
+	// 获取函数名
+	fnIdent, ok := call.Fun.(*ast.Ident)
+	if !ok {
+		return nil, fmt.Errorf("不支持的函数表达式类型")
+	}
+
+	// 查找注册函数
+	fn, exists := i.funcTable[fnIdent.Name]
+	if !exists {
+		return nil, fmt.Errorf("未注册函数: %s", fnIdent.Name)
+	}
+
+	// 评估参数
+	args := make([]reflect.Value, len(call.Args))
+	for idx, argExpr := range call.Args {
+		argVal, err := i.eval(argExpr)
+		if err != nil {
+			return nil, err
+		}
+		args[idx] = reflect.ValueOf(argVal)
+	}
+
+	// 调用函数
+	results := fn.Call(args)
+	if len(results) == 0 {
+		return nil, nil
+	}
+	return results[0].Interface(), nil
+}
+
+// 处理二元表达式
+func (i *Interpreter) evalBinaryExpr(expr *ast.BinaryExpr) (interface{}, error) {
+	left, err := i.eval(expr.X)
+	if err != nil {
+		return nil, err
+	}
+
+	right, err := i.eval(expr.Y)
+	if err != nil {
+		return nil, err
+	}
+
+	switch expr.Op {
+	case token.ADD:
+		return add(left, right)
+	case token.SUB:
+		return sub(left, right)
+	case token.MUL:
+		return mul(left, right)
+	case token.QUO:
+		return div(left, right)
+	case token.LSS:
+		return lessThan(left, right)
+	case token.GTR:
+		return greaterThan(left, right)
+	case token.LEQ:
+		less, err := lessThan(left, right)
+		if err != nil {
+			return nil, err
+		}
+		equal, err := equal(left, right)
+		if err != nil {
+			return nil, err
+		}
+		return less || equal, nil
+	case token.GEQ:
+		greater, err := greaterThan(left, right)
+		if err != nil {
+			return nil, err
+		}
+		equal, err := equal(left, right)
+		if err != nil {
+			return nil, err
+		}
+		return greater || equal, nil
+	case token.EQL:
+		return equal(left, right)
+	case token.REM:
+		return mod(left, right)
+	case token.ADD_ASSIGN:
+		return addAssign(left, right)
+	case token.SUB_ASSIGN:
+		return subAssign(left, right)
+
+	default:
+		return nil, fmt.Errorf("不支持的运算符: %s", expr.Op)
+	}
+}
+
+// 类型转换辅助函数
+func toBool(val interface{}) bool {
+	if val == nil {
+		return false
+	}
+	switch v := val.(type) {
+	case bool:
+		return v
+	case int:
+		return v != 0
+	case float64:
+		return v != 0
+	case string:
+		return v != ""
+	default:
+		return true
+	}
+}
+
+// 算术运算实现
+func add(a, b interface{}) (interface{}, error) {
+	switch a := a.(type) {
+	case int:
+		switch b := b.(type) {
+		case int:
+			return a + b, nil
+		case float64:
+			return float64(a) + b, nil
+		}
+	case float64:
+		switch b := b.(type) {
+		case int:
+			return a + float64(b), nil
+		case float64:
+			return a + b, nil
+		}
+	case string:
+		if bStr, ok := b.(string); ok {
+			return a + bStr, nil
+		}
+	}
+	return nil, fmt.Errorf("类型不匹配: %T + %T", a, b)
+}
+
+// 减法运算
+func sub(a, b interface{}) (interface{}, error) {
+	switch a := a.(type) {
+	case int:
+		switch b := b.(type) {
+		case int:
+			return a - b, nil
+		case float64:
+			return float64(a) - b, nil
+		}
+	case float64:
+		switch b := b.(type) {
+		case int:
+			return a - float64(b), nil
+		case float64:
+			return a - b, nil
+		}
+	}
+	return nil, fmt.Errorf("无效操作: %T - %T", a, b)
+}
+
+// 乘法运算
+func mul(a, b interface{}) (interface{}, error) {
+	switch a := a.(type) {
+	case int:
+		switch b := b.(type) {
+		case int:
+			return a * b, nil
+		case float64:
+			return float64(a) * b, nil
+		}
+	case float64:
+		switch b := b.(type) {
+		case int:
+			return a * float64(b), nil
+		case float64:
+			return a * b, nil
+		}
+	}
+	return nil, fmt.Errorf("无效操作: %T * %T", a, b)
+}
+
+// 除法运算
+func div(a, b interface{}) (interface{}, error) {
+	switch a := a.(type) {
+	case int:
+		switch b := b.(type) {
+		case int:
+			if b == 0 {
+				return nil, fmt.Errorf("除以零错误")
+			}
+			return a / b, nil
+		case float64:
+			if b == 0 {
+				return nil, fmt.Errorf("除以零错误")
+			}
+			return float64(a) / b, nil
+		}
+	case float64:
+		switch b := b.(type) {
+		case int:
+			if b == 0 {
+				return nil, fmt.Errorf("除以零错误")
+			}
+			return a / float64(b), nil
+		case float64:
+			if b == 0 {
+				return nil, fmt.Errorf("除以零错误")
+			}
+			return a / b, nil
+		}
+	}
+	return nil, fmt.Errorf("无效操作: %T / %T", a, b)
+}
+
+// 比较运算
+func lessThan(a, b interface{}) (bool, error) {
+	switch a := a.(type) {
+	case int:
+		switch b := b.(type) {
+		case int:
+			return a < b, nil
+		case float64:
+			return float64(a) < b, nil
+		}
+	case float64:
+		switch b := b.(type) {
+		case int:
+			return a < float64(b), nil
+		case float64:
+			return a < b, nil
+		}
+	case string:
+		if bStr, ok := b.(string); ok {
+			return a < bStr, nil
+		}
+	}
+	return false, fmt.Errorf("类型不匹配比较: %T < %T", a, b)
+}
+
+func greaterThan(a, b interface{}) (bool, error) {
+	switch a := a.(type) {
+	case int:
+		switch b := b.(type) {
+		case int:
+			return a > b, nil
+		case float64:
+			return float64(a) > b, nil
+		}
+	case float64:
+		switch b := b.(type) {
+		case int:
+			return a > float64(b), nil
+		case float64:
+			return a > b, nil
+		}
+	case string:
+		if bStr, ok := b.(string); ok {
+			return a > bStr, nil
+		}
+	}
+	return false, fmt.Errorf("类型不匹配比较: %T > %T", a, b)
+}
+
+func equal(a, b interface{}) (bool, error) {
+	switch a := a.(type) {
+	case int:
+		switch b := b.(type) {
+		case int:
+			return a == b, nil
+		case float64:
+			return float64(a) == b, nil
+		}
+	case float64:
+		switch b := b.(type) {
+		case int:
+			return a == float64(b), nil
+		case float64:
+			return a == b, nil
+		}
+	case string:
+		if bStr, ok := b.(string); ok {
+			return a == bStr, nil
+		}
+	case bool:
+		if bBool, ok := b.(bool); ok {
+			return a == bBool, nil
+		}
+	case nil:
+		return b == nil, nil
+	}
+	return false, nil // 类型不同直接返回false
+}
+
+// 取模运算（需要单独处理）
+func mod(a, b interface{}) (interface{}, error) {
+	switch a := a.(type) {
+	case int:
+		switch b := b.(type) {
+		case int:
+			if b == 0 {
+				return nil, fmt.Errorf("取模运算除数为零")
+			}
+			return a % b, nil
+		}
+	}
+	return nil, fmt.Errorf("无效操作: %T %% %T", a, b)
+}
+
+func addAssign(a, b interface{}) (interface{}, error) {
+	return add(a, b)
+}
+
+func subAssign(a, b interface{}) (interface{}, error) {
+	return sub(a, b)
+}
+
+// 添加处理return语句的函数
+func (i *Interpreter) evalReturnStmt(ret *ast.ReturnStmt) (interface{}, error) {
+	if len(ret.Results) == 0 {
+		return nil, nil
+	}
+	// 目前只处理单个返回值
+	return i.eval(ret.Results[0])
+}
+
+// 处理自增自减语句
+func (i *Interpreter) evalIncDecStmt(stmt *ast.IncDecStmt) (interface{}, error) {
+	// 获取操作数
+	ident, ok := stmt.X.(*ast.Ident)
+	if !ok {
+		return nil, fmt.Errorf("自增自减操作只支持变量")
+	}
+
+	// 获取当前值
+	currentVal, err := i.evalIdent(ident)
+	if err != nil {
+		return nil, err
+	}
+
+	// 根据操作符计算新值
+	var newVal interface{}
+	switch stmt.Tok {
+	case token.INC: // ++
+		newVal, err = add(currentVal, 1)
+	case token.DEC: // --
+		newVal, err = sub(currentVal, 1)
+	}
+	if err != nil {
+		return nil, err
+	}
+
+	// 更新变量值
+	currentScope := i.scope
+	for currentScope != nil {
+		if _, ok := currentScope.objects[ident.Name]; ok {
+			currentScope.objects[ident.Name] = newVal
+			break
+		}
+		currentScope = currentScope.parent
+	}
+
+	return newVal, nil
+}
+
+func main() {
+	interp := NewInterpreter()
+
+	// 注册内置函数
+	interp.RegisterFunction("print", func(s any) {
+		fmt.Printf("%v \n", s)
+	})
+
+	// 执行复杂逻辑
+	code := `
+sum := 0
+for i := 1; i <= 5; i++ {
+	if i % 2 == 0 {
+		sum += i * 2
+		print(sum)
+	} else {
+		sum += i
+		print(sum)
+	}
+}
+	return sum
+`
+
+	result, err := interp.Interpret(code)
+	if err != nil {
+		panic(err)
+	}
+	fmt.Println("计算结果:", result) // 应该输出 1 + 4 + 3 + 8 + 5 = 21
+}
