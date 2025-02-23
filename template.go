@@ -17,31 +17,41 @@ type Function struct {
 
 type Interpreter struct {
 	scope     *Scope
+	global    any
 	funcTable map[string]reflect.Value // 内置函数表
 	userFuncs map[string]*Function     // 用户定义的函数表
 }
 
 type Scope struct {
 	parent  *Scope
-	objects map[string]interface{}
+	objects map[string]any
 }
 
 func NewInterpreter() *Interpreter {
 	globalScope := &Scope{
-		objects: make(map[string]interface{}),
+		objects: make(map[string]any),
 	}
 	return &Interpreter{
 		scope:     globalScope,
+		global:    globalScope,
 		funcTable: make(map[string]reflect.Value),
 		userFuncs: make(map[string]*Function),
 	}
 }
 
-func (i *Interpreter) RegisterFunction(name string, fn interface{}) {
+func (i *Interpreter) RegisterFunction(name string, fn any) {
 	i.funcTable[name] = reflect.ValueOf(fn)
 }
 
-func (i *Interpreter) Interpret(code string) (interface{}, error) {
+func (i *Interpreter) BindObject(name string, obj any) {
+	i.scope.objects[name] = obj
+}
+
+func (i *Interpreter) BindGlobalObject(obj any) {
+	i.global = obj
+}
+
+func (i *Interpreter) Interpret(code string) (any, error) {
 	fset := token.NewFileSet()
 	code = `package main
 	func __main__() any {	
@@ -79,7 +89,7 @@ func (i *Interpreter) Interpret(code string) (interface{}, error) {
 	// return nil, fmt.Errorf("没有找到 __main__ 函数")
 }
 
-func (i *Interpreter) eval(node ast.Node) (interface{}, error) {
+func (i *Interpreter) eval(node ast.Node) (any, error) {
 	switch n := node.(type) {
 	case *ast.BasicLit:
 		return i.evalBasicLit(n)
@@ -97,7 +107,7 @@ func (i *Interpreter) eval(node ast.Node) (interface{}, error) {
 			switch t := n.Args[0].(type) {
 			case *ast.MapType:
 				// 创建新的 map
-				return make(map[string]interface{}), nil
+				return make(map[string]any), nil
 			case *ast.ArrayType:
 				// 创建新的 slice
 				size := 0
@@ -111,7 +121,7 @@ func (i *Interpreter) eval(node ast.Node) (interface{}, error) {
 						size = sizeInt
 					}
 				}
-				return make([]interface{}, size), nil
+				return make([]any, size), nil
 			default:
 				return nil, fmt.Errorf("不支持的 make 类型: %T", t)
 			}
@@ -147,14 +157,14 @@ func (i *Interpreter) eval(node ast.Node) (interface{}, error) {
 		return i.evalDeclStmt(n)
 	case *ast.MapType:
 		// 直接支持 map 类型
-		return make(map[string]interface{}), nil
+		return make(map[string]any), nil
 	default:
 		return nil, fmt.Errorf("unsupported node type: %T", node)
 	}
 }
 
 // 基础类型处理
-func (i *Interpreter) evalBasicLit(lit *ast.BasicLit) (interface{}, error) {
+func (i *Interpreter) evalBasicLit(lit *ast.BasicLit) (any, error) {
 	switch lit.Kind {
 	case token.INT:
 		return strconv.Atoi(lit.Value)
@@ -168,7 +178,7 @@ func (i *Interpreter) evalBasicLit(lit *ast.BasicLit) (interface{}, error) {
 }
 
 // 处理标识符（变量/常量）
-func (i *Interpreter) evalIdent(ident *ast.Ident) (interface{}, error) {
+func (i *Interpreter) evalIdent(ident *ast.Ident) (any, error) {
 	// 先检查是否是预定义常量
 	switch ident.Name {
 	case "true":
@@ -177,6 +187,8 @@ func (i *Interpreter) evalIdent(ident *ast.Ident) (interface{}, error) {
 		return false, nil
 	case "nil":
 		return nil, nil
+	case "G":
+		return i.global, nil
 	}
 
 	// 作用域链查找
@@ -198,20 +210,58 @@ func (i *Interpreter) evalIdent(ident *ast.Ident) (interface{}, error) {
 		return fn, nil
 	}
 
+	// 尝试从 __global__ 中获取
+	if i.global != nil {
+		switch g := i.global.(type) {
+		case map[string]any:
+			if val, exists := g[ident.Name]; exists {
+				return val, nil
+			}
+		default:
+			v := reflect.ValueOf(g)
+			if v.Kind() == reflect.Ptr {
+				v = v.Elem()
+			}
+			if v.Kind() == reflect.Struct {
+				if field := v.FieldByName(ident.Name); field.IsValid() {
+					// 检查字段是否可导出（首字母大写）
+					if field.CanInterface() {
+						return field.Interface(), nil
+					}
+					// 对于私有字段，返回错误
+					return nil, fmt.Errorf("无法访问私有字段: %s", ident.Name)
+				}
+				// 尝试查找方法
+				if method := v.MethodByName(ident.Name); method.IsValid() {
+					if method.CanInterface() {
+						return method.Interface(), nil
+					}
+					return nil, fmt.Errorf("无法访问私有方法: %s", ident.Name)
+				}
+				// 如果是指针，也查找指针的方法
+				if v.CanAddr() {
+					if method := v.Addr().MethodByName(ident.Name); method.IsValid() {
+						return method.Interface(), nil
+					}
+				}
+			}
+		}
+	}
+
 	return nil, fmt.Errorf("未定义的标识符: %s", ident.Name)
 }
 
 // 处理代码块
-func (i *Interpreter) evalBlockStmt(block *ast.BlockStmt) (interface{}, error) {
+func (i *Interpreter) evalBlockStmt(block *ast.BlockStmt) (any, error) {
 	// 创建新的作用域
 	prevScope := i.scope
 	i.scope = &Scope{
 		parent:  prevScope,
-		objects: make(map[string]interface{}),
+		objects: make(map[string]any),
 	}
 	defer func() { i.scope = prevScope }() // 确保作用域恢复
 
-	var result interface{}
+	var result any
 	var err error
 
 	for _, stmt := range block.List {
@@ -224,7 +274,7 @@ func (i *Interpreter) evalBlockStmt(block *ast.BlockStmt) (interface{}, error) {
 }
 
 // 处理for循环
-func (i *Interpreter) evalForStmt(f *ast.ForStmt) (interface{}, error) {
+func (i *Interpreter) evalForStmt(f *ast.ForStmt) (any, error) {
 	// 初始化语句
 	if f.Init != nil {
 		_, err := i.eval(f.Init)
@@ -263,7 +313,7 @@ func (i *Interpreter) evalForStmt(f *ast.ForStmt) (interface{}, error) {
 }
 
 // 处理if语句
-func (i *Interpreter) evalIfStmt(ifStmt *ast.IfStmt) (interface{}, error) {
+func (i *Interpreter) evalIfStmt(ifStmt *ast.IfStmt) (any, error) {
 	// 初始化语句（如 if x := ...; x > 0 {}）
 	if ifStmt.Init != nil {
 		_, err := i.eval(ifStmt.Init)
@@ -287,9 +337,9 @@ func (i *Interpreter) evalIfStmt(ifStmt *ast.IfStmt) (interface{}, error) {
 }
 
 // 处理赋值语句
-func (i *Interpreter) evalAssignStmt(assign *ast.AssignStmt) (interface{}, error) {
+func (i *Interpreter) evalAssignStmt(assign *ast.AssignStmt) (any, error) {
 	// 处理右侧表达式
-	values := make([]interface{}, len(assign.Rhs))
+	values := make([]any, len(assign.Rhs))
 	for idx, expr := range assign.Rhs {
 		val, err := i.eval(expr)
 		if err != nil {
@@ -331,15 +381,15 @@ func (i *Interpreter) evalAssignStmt(assign *ast.AssignStmt) (interface{}, error
 
 				// 根据容器类型进行赋值
 				switch c := container.(type) {
-				case map[interface{}]interface{}:
+				case map[any]any:
 					c[index] = values[idx]
-				case map[string]interface{}:
+				case map[string]any:
 					if strKey, ok := index.(string); ok {
 						c[strKey] = values[idx]
 					} else {
 						return nil, fmt.Errorf("map键必须是字符串类型")
 					}
-				case []interface{}:
+				case []any:
 					if intIndex, ok := index.(int); ok {
 						if intIndex < 0 || intIndex >= len(c) {
 							return nil, fmt.Errorf("索引越界")
@@ -360,9 +410,9 @@ func (i *Interpreter) evalAssignStmt(assign *ast.AssignStmt) (interface{}, error
 
 				// 根据容器类型进行赋值
 				switch c := container.(type) {
-				case map[interface{}]interface{}:
+				case map[any]any:
 					c[l.Sel.Name] = values[idx]
-				case map[string]interface{}:
+				case map[string]any:
 					c[l.Sel.Name] = values[idx]
 				default:
 					return nil, fmt.Errorf("不支持的选择器赋值操作: %T", container)
@@ -405,7 +455,7 @@ func (i *Interpreter) evalAssignStmt(assign *ast.AssignStmt) (interface{}, error
 }
 
 // 处理函数调用
-func (i *Interpreter) evalCallExpr(call *ast.CallExpr) (interface{}, error) {
+func (i *Interpreter) evalCallExpr(call *ast.CallExpr) (any, error) {
 	// 先评估函数表达式
 	fn, err := i.eval(call.Fun)
 	if err != nil {
@@ -413,7 +463,7 @@ func (i *Interpreter) evalCallExpr(call *ast.CallExpr) (interface{}, error) {
 	}
 
 	// 评估所有参数
-	args := make([]interface{}, len(call.Args))
+	args := make([]any, len(call.Args))
 	for idx, argExpr := range call.Args {
 		argVal, err := i.eval(argExpr)
 		if err != nil {
@@ -424,7 +474,7 @@ func (i *Interpreter) evalCallExpr(call *ast.CallExpr) (interface{}, error) {
 
 	// 根据函数类型进行不同的处理
 	switch fn := fn.(type) {
-	case func(...interface{}) (interface{}, error):
+	case func(...any) (any, error):
 		// 闭包函数
 		return fn(args...)
 	case reflect.Value:
@@ -444,7 +494,7 @@ func (i *Interpreter) evalCallExpr(call *ast.CallExpr) (interface{}, error) {
 		prevScope := i.scope
 		newScope := &Scope{
 			parent:  prevScope,
-			objects: make(map[string]interface{}),
+			objects: make(map[string]any),
 		}
 		i.scope = newScope
 		defer func() { i.scope = prevScope }()
@@ -462,12 +512,41 @@ func (i *Interpreter) evalCallExpr(call *ast.CallExpr) (interface{}, error) {
 		// 执行函数体
 		return i.eval(fn.body)
 	default:
-		return nil, fmt.Errorf("不是可调用的函数: %T", fn)
+		// 使用反射处理其他类型的函数
+		fnValue := reflect.ValueOf(fn)
+		if fnValue.Kind() != reflect.Func {
+			return nil, fmt.Errorf("不是可调用的函数: %T", fn)
+		}
+
+		// 准备参数
+		fnType := fnValue.Type()
+		if fnType.NumIn() != len(args) {
+			return nil, fmt.Errorf("参数数量不匹配: 期望 %d, 得到 %d", fnType.NumIn(), len(args))
+		}
+
+		callArgs := make([]reflect.Value, len(args))
+		for i := 0; i < len(args); i++ {
+			arg := args[i]
+			if arg == nil {
+				callArgs[i] = reflect.Zero(fnType.In(i))
+			} else {
+				callArgs[i] = reflect.ValueOf(arg)
+			}
+		}
+
+		// 调用函数
+		results := fnValue.Call(callArgs)
+		if len(results) == 0 {
+			return nil, nil
+		}
+		return results[0].Interface(), nil
+
+		// return nil, fmt.Errorf("不是可调用的函数: %T", fn)
 	}
 }
 
 // 处理二元表达式
-func (i *Interpreter) evalBinaryExpr(expr *ast.BinaryExpr) (interface{}, error) {
+func (i *Interpreter) evalBinaryExpr(expr *ast.BinaryExpr) (any, error) {
 	left, err := i.eval(expr.X)
 	if err != nil {
 		return nil, err
@@ -526,7 +605,7 @@ func (i *Interpreter) evalBinaryExpr(expr *ast.BinaryExpr) (interface{}, error) 
 }
 
 // 类型转换辅助函数
-func toBool(val interface{}) bool {
+func toBool(val any) bool {
 	if val == nil {
 		return false
 	}
@@ -545,7 +624,7 @@ func toBool(val interface{}) bool {
 }
 
 // 算术运算实现
-func add(a, b interface{}) (interface{}, error) {
+func add(a, b any) (any, error) {
 	switch a := a.(type) {
 	case int:
 		switch b := b.(type) {
@@ -570,7 +649,7 @@ func add(a, b interface{}) (interface{}, error) {
 }
 
 // 减法运算
-func sub(a, b interface{}) (interface{}, error) {
+func sub(a, b any) (any, error) {
 	switch a := a.(type) {
 	case int:
 		switch b := b.(type) {
@@ -591,7 +670,7 @@ func sub(a, b interface{}) (interface{}, error) {
 }
 
 // 乘法运算
-func mul(a, b interface{}) (interface{}, error) {
+func mul(a, b any) (any, error) {
 	switch a := a.(type) {
 	case int:
 		switch b := b.(type) {
@@ -612,7 +691,7 @@ func mul(a, b interface{}) (interface{}, error) {
 }
 
 // 除法运算
-func div(a, b interface{}) (interface{}, error) {
+func div(a, b any) (any, error) {
 	switch a := a.(type) {
 	case int:
 		switch b := b.(type) {
@@ -645,7 +724,7 @@ func div(a, b interface{}) (interface{}, error) {
 }
 
 // 比较运算
-func lessThan(a, b interface{}) (bool, error) {
+func lessThan(a, b any) (bool, error) {
 	switch a := a.(type) {
 	case int:
 		switch b := b.(type) {
@@ -669,7 +748,7 @@ func lessThan(a, b interface{}) (bool, error) {
 	return false, fmt.Errorf("类型不匹配比较: %T < %T", a, b)
 }
 
-func greaterThan(a, b interface{}) (bool, error) {
+func greaterThan(a, b any) (bool, error) {
 	switch a := a.(type) {
 	case int:
 		switch b := b.(type) {
@@ -693,7 +772,7 @@ func greaterThan(a, b interface{}) (bool, error) {
 	return false, fmt.Errorf("类型不匹配比较: %T > %T", a, b)
 }
 
-func equal(a, b interface{}) (bool, error) {
+func equal(a, b any) (bool, error) {
 	switch a := a.(type) {
 	case int:
 		switch b := b.(type) {
@@ -724,7 +803,7 @@ func equal(a, b interface{}) (bool, error) {
 }
 
 // 取模运算（需要单独处理）
-func mod(a, b interface{}) (interface{}, error) {
+func mod(a, b any) (any, error) {
 	switch a := a.(type) {
 	case int:
 		switch b := b.(type) {
@@ -757,7 +836,7 @@ func or(a, b any) (any, error) {
 }
 
 // 添加处理return语句的函数
-func (i *Interpreter) evalReturnStmt(ret *ast.ReturnStmt) (interface{}, error) {
+func (i *Interpreter) evalReturnStmt(ret *ast.ReturnStmt) (any, error) {
 	if len(ret.Results) == 0 {
 		return nil, nil
 	}
@@ -766,7 +845,7 @@ func (i *Interpreter) evalReturnStmt(ret *ast.ReturnStmt) (interface{}, error) {
 }
 
 // 处理自增自减语句
-func (i *Interpreter) evalIncDecStmt(stmt *ast.IncDecStmt) (interface{}, error) {
+func (i *Interpreter) evalIncDecStmt(stmt *ast.IncDecStmt) (any, error) {
 	// 获取操作数
 	ident, ok := stmt.X.(*ast.Ident)
 	if !ok {
@@ -780,7 +859,7 @@ func (i *Interpreter) evalIncDecStmt(stmt *ast.IncDecStmt) (interface{}, error) 
 	}
 
 	// 根据操作符计算新值
-	var newVal interface{}
+	var newVal any
 	switch stmt.Tok {
 	case token.INC: // ++
 		newVal, err = add(currentVal, 1)
@@ -805,7 +884,7 @@ func (i *Interpreter) evalIncDecStmt(stmt *ast.IncDecStmt) (interface{}, error) 
 }
 
 // 添加新的处理函数字面量的方法
-func (i *Interpreter) evalFuncLit(fn *ast.FuncLit) (interface{}, error) {
+func (i *Interpreter) evalFuncLit(fn *ast.FuncLit) (any, error) {
 	// 创建一个Function对象来存储函数信息
 	function := &Function{
 		params: fn.Type.Params.List,
@@ -813,12 +892,12 @@ func (i *Interpreter) evalFuncLit(fn *ast.FuncLit) (interface{}, error) {
 	}
 
 	// 返回一个闭包函数
-	return func(args ...interface{}) (interface{}, error) {
+	return func(args ...any) (any, error) {
 		// 创建新的作用域
 		prevScope := i.scope
 		newScope := &Scope{
 			parent:  prevScope,
-			objects: make(map[string]interface{}),
+			objects: make(map[string]any),
 		}
 		i.scope = newScope
 		defer func() { i.scope = prevScope }()
@@ -838,11 +917,11 @@ func (i *Interpreter) evalFuncLit(fn *ast.FuncLit) (interface{}, error) {
 }
 
 // 处理复合字面量
-func (i *Interpreter) evalCompositeLit(lit *ast.CompositeLit) (interface{}, error) {
+func (i *Interpreter) evalCompositeLit(lit *ast.CompositeLit) (any, error) {
 	switch t := lit.Type.(type) {
 	case *ast.MapType:
 		// 创建map
-		m := make(map[interface{}]interface{})
+		m := make(map[any]any)
 
 		// 处理每个键值对
 		for _, elt := range lit.Elts {
@@ -869,7 +948,7 @@ func (i *Interpreter) evalCompositeLit(lit *ast.CompositeLit) (interface{}, erro
 
 	case *ast.ArrayType:
 		// 创建slice
-		var slice []interface{}
+		var slice []any
 		for _, elt := range lit.Elts {
 			val, err := i.eval(elt)
 			if err != nil {
@@ -885,7 +964,7 @@ func (i *Interpreter) evalCompositeLit(lit *ast.CompositeLit) (interface{}, erro
 }
 
 // 处理键值表达式
-func (i *Interpreter) evalKeyValueExpr(kv *ast.KeyValueExpr) (interface{}, error) {
+func (i *Interpreter) evalKeyValueExpr(kv *ast.KeyValueExpr) (any, error) {
 	key, err := i.eval(kv.Key)
 	if err != nil {
 		return nil, err
@@ -896,14 +975,14 @@ func (i *Interpreter) evalKeyValueExpr(kv *ast.KeyValueExpr) (interface{}, error
 		return nil, err
 	}
 
-	return map[string]interface{}{
+	return map[string]any{
 		"key":   key,
 		"value": value,
 	}, nil
 }
 
 // 处理索引表达式
-func (i *Interpreter) evalIndexExpr(expr *ast.IndexExpr) (interface{}, error) {
+func (i *Interpreter) evalIndexExpr(expr *ast.IndexExpr) (any, error) {
 	// 计算被索引的对象
 	container, err := i.eval(expr.X)
 	if err != nil {
@@ -918,18 +997,18 @@ func (i *Interpreter) evalIndexExpr(expr *ast.IndexExpr) (interface{}, error) {
 
 	// 根据容器类型进行不同的处理
 	switch c := container.(type) {
-	case map[interface{}]interface{}:
+	case map[any]any:
 		// 对于map，直接使用索引作为键
 		return c[index], nil
 
-	case map[string]interface{}:
+	case map[string]any:
 		// 如果是string类型的map，需要将索引转换为string
 		if strKey, ok := index.(string); ok {
 			return c[strKey], nil
 		}
 		return nil, fmt.Errorf("map键必须是字符串类型，得到: %T", index)
 
-	case []interface{}:
+	case []any:
 		// 对于slice，索引必须是整数
 		switch idx := index.(type) {
 		case int:
@@ -959,7 +1038,7 @@ func (i *Interpreter) evalIndexExpr(expr *ast.IndexExpr) (interface{}, error) {
 }
 
 // 添加处理选择器表达式的方法
-func (i *Interpreter) evalSelectorExpr(sel *ast.SelectorExpr) (interface{}, error) {
+func (i *Interpreter) evalSelectorExpr(sel *ast.SelectorExpr) (any, error) {
 	// 计算被选择的对象
 	container, err := i.eval(sel.X)
 	if err != nil {
@@ -971,13 +1050,42 @@ func (i *Interpreter) evalSelectorExpr(sel *ast.SelectorExpr) (interface{}, erro
 
 	// 处理map类型
 	switch c := container.(type) {
-	case map[interface{}]interface{}:
+	case map[any]any:
 		if val, ok := c[fieldName]; ok {
 			return val, nil
 		}
-	case map[string]interface{}:
+	case map[string]any:
 		if val, ok := c[fieldName]; ok {
 			return val, nil
+		}
+	default:
+		// 处理结构体和指针类型
+		v := reflect.ValueOf(container)
+		if v.Kind() == reflect.Ptr {
+			v = v.Elem()
+		}
+		if v.Kind() == reflect.Struct {
+			// 尝试获取字段
+			if field := v.FieldByName(fieldName); field.IsValid() {
+				// 检查字段是否可导出
+				if field.CanInterface() {
+					return field.Interface(), nil
+				}
+				return nil, fmt.Errorf("无法访问私有字段: %s", fieldName)
+			}
+			// 尝试获取方法
+			if method := v.MethodByName(fieldName); method.IsValid() {
+				if method.CanInterface() {
+					return method.Interface(), nil
+				}
+				return nil, fmt.Errorf("无法访问私有方法: %s", fieldName)
+			}
+			// 如果是指针类型,也尝试获取指针的方法
+			if v.CanAddr() {
+				if method := v.Addr().MethodByName(fieldName); method.IsValid() {
+					return method.Interface(), nil
+				}
+			}
 		}
 	}
 
@@ -985,7 +1093,7 @@ func (i *Interpreter) evalSelectorExpr(sel *ast.SelectorExpr) (interface{}, erro
 }
 
 // 添加处理声明语句的方法
-func (i *Interpreter) evalDeclStmt(stmt *ast.DeclStmt) (interface{}, error) {
+func (i *Interpreter) evalDeclStmt(stmt *ast.DeclStmt) (any, error) {
 	switch decl := stmt.Decl.(type) {
 	case *ast.GenDecl:
 		switch decl.Tok {
@@ -993,7 +1101,7 @@ func (i *Interpreter) evalDeclStmt(stmt *ast.DeclStmt) (interface{}, error) {
 			for _, spec := range decl.Specs {
 				if valueSpec, ok := spec.(*ast.ValueSpec); ok {
 					// 处理初始值
-					var value interface{} = nil
+					var value any = nil
 					if len(valueSpec.Values) > 0 {
 						var err error
 						value, err = i.eval(valueSpec.Values[0])
@@ -1020,23 +1128,42 @@ func main() {
 	interp.RegisterFunction("print", func(s any) {
 		fmt.Printf("%v \n", s)
 	})
-	interp.scope.objects["x"] = 1
+	// interp.BindGlobalObject(map[string]any{
+	// 	"x": 1,
+	// 	"y": func(a string) {
+	// 		fmt.Printf("fomat by y   %v \n", a)
+	// 	},
+	// })
+
+	interp.BindGlobalObject(test{
+		X: 222,
+		Y: func(s string) {
+			fmt.Printf("fomat by y   %v \n", s)
+		},
+	})
 
 	// 执行复杂逻辑
 	code := `
+	print(X)
+	print("bar")
+
+	Y("bar")
+
+	G.Bar()
+	
 	yyy := func(a string){
 		print("ok " + a)
 	}
-	yyy("shit")
+	yyy("foo")
 	mp := map[string]any{
 		"x": 1,
 		"y": 2,
 	}
 	mp = make(map[string]any)
-	mp["x"] = "shit"
+	mp["x"] = "foo"
 	yyy(mp.x)
 	mp["y"] = 4
-	mp.x = "shit jian"
+	mp.x = "foo jian"
 	var b = 1
 
 	yyy(mp.x)
