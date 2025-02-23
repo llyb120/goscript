@@ -88,6 +88,34 @@ func (i *Interpreter) eval(node ast.Node) (interface{}, error) {
 	case *ast.BinaryExpr:
 		return i.evalBinaryExpr(n)
 	case *ast.CallExpr:
+		// 处理 make 内置函数
+		if ident, ok := n.Fun.(*ast.Ident); ok && ident.Name == "make" {
+			if len(n.Args) == 0 {
+				return nil, fmt.Errorf("make 需要至少一个参数")
+			}
+
+			switch t := n.Args[0].(type) {
+			case *ast.MapType:
+				// 创建新的 map
+				return make(map[string]interface{}), nil
+			case *ast.ArrayType:
+				// 创建新的 slice
+				size := 0
+				if len(n.Args) > 1 {
+					// 如果提供了大小参数
+					sizeVal, err := i.eval(n.Args[1])
+					if err != nil {
+						return nil, err
+					}
+					if sizeInt, ok := sizeVal.(int); ok {
+						size = sizeInt
+					}
+				}
+				return make([]interface{}, size), nil
+			default:
+				return nil, fmt.Errorf("不支持的 make 类型: %T", t)
+			}
+		}
 		return i.evalCallExpr(n)
 	case *ast.ParenExpr:
 		return i.eval(n.X)
@@ -117,6 +145,9 @@ func (i *Interpreter) eval(node ast.Node) (interface{}, error) {
 		return i.evalSelectorExpr(n)
 	case *ast.DeclStmt:
 		return i.evalDeclStmt(n)
+	case *ast.MapType:
+		// 直接支持 map 类型
+		return make(map[string]interface{}), nil
 	default:
 		return nil, fmt.Errorf("unsupported node type: %T", node)
 	}
