@@ -153,9 +153,14 @@ func (i *Interpreter) evalIdent(ident *ast.Ident) (interface{}, error) {
 		currentScope = currentScope.parent
 	}
 
-	// 最后检查是否是注册函数
-	if _, ok := i.funcTable[ident.Name]; ok {
-		return nil, fmt.Errorf("函数%s需要括号调用", ident.Name)
+	// 检查是否是内置函数
+	if fn, ok := i.funcTable[ident.Name]; ok {
+		return fn, nil
+	}
+
+	// 检查是否是用户定义的函数
+	if fn, ok := i.userFuncs[ident.Name]; ok {
+		return fn, nil
 	}
 
 	return nil, fmt.Errorf("未定义的标识符: %s", ident.Name)
@@ -350,30 +355,40 @@ func (i *Interpreter) evalAssignStmt(assign *ast.AssignStmt) (interface{}, error
 
 // 处理函数调用
 func (i *Interpreter) evalCallExpr(call *ast.CallExpr) (interface{}, error) {
-	fnIdent, ok := call.Fun.(*ast.Ident)
-	if !ok {
-		return nil, fmt.Errorf("不支持的函数表达式类型")
+	// 先评估函数表达式
+	fn, err := i.eval(call.Fun)
+	if err != nil {
+		return nil, err
 	}
 
-	// 先检查是否是内置函数
-	if fn, exists := i.funcTable[fnIdent.Name]; exists {
-		args := make([]reflect.Value, len(call.Args))
-		for idx, argExpr := range call.Args {
-			argVal, err := i.eval(argExpr)
-			if err != nil {
-				return nil, err
-			}
-			args[idx] = reflect.ValueOf(argVal)
+	// 评估所有参数
+	args := make([]interface{}, len(call.Args))
+	for idx, argExpr := range call.Args {
+		argVal, err := i.eval(argExpr)
+		if err != nil {
+			return nil, err
 		}
-		results := fn.Call(args)
+		args[idx] = argVal
+	}
+
+	// 根据函数类型进行不同的处理
+	switch fn := fn.(type) {
+	case func(...interface{}) (interface{}, error):
+		// 闭包函数
+		return fn(args...)
+	case reflect.Value:
+		// 内置函数
+		reflectArgs := make([]reflect.Value, len(args))
+		for idx, arg := range args {
+			reflectArgs[idx] = reflect.ValueOf(arg)
+		}
+		results := fn.Call(reflectArgs)
 		if len(results) == 0 {
 			return nil, nil
 		}
 		return results[0].Interface(), nil
-	}
-
-	// 检查是否是用户定义的函数
-	if userFunc, exists := i.userFuncs[fnIdent.Name]; exists {
+	case *Function:
+		// 用户定义的函数
 		// 创建新的作用域
 		prevScope := i.scope
 		newScope := &Scope{
@@ -384,24 +399,20 @@ func (i *Interpreter) evalCallExpr(call *ast.CallExpr) (interface{}, error) {
 		defer func() { i.scope = prevScope }()
 
 		// 处理参数
-		if len(call.Args) != len(userFunc.params) {
-			return nil, fmt.Errorf("函数 %s 参数数量不匹配", fnIdent.Name)
+		if len(args) != len(fn.params) {
+			return nil, fmt.Errorf("参数数量不匹配")
 		}
 
 		// 绑定参数到新作用域
-		for idx, param := range userFunc.params {
-			argVal, err := i.eval(call.Args[idx])
-			if err != nil {
-				return nil, err
-			}
-			newScope.objects[param.Names[0].Name] = argVal
+		for idx, param := range fn.params {
+			newScope.objects[param.Names[0].Name] = args[idx]
 		}
 
 		// 执行函数体
-		return i.eval(userFunc.body)
+		return i.eval(fn.body)
+	default:
+		return nil, fmt.Errorf("不是可调用的函数: %T", fn)
 	}
-
-	return nil, fmt.Errorf("未定义的函数: %s", fnIdent.Name)
 }
 
 // 处理二元表达式
@@ -928,7 +939,6 @@ for i := 1; i <= 5; i++ {
 		print(sum)
 	}
 }
-	xxx()
 	return sum
 `
 
