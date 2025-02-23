@@ -44,36 +44,39 @@ func (i *Interpreter) RegisterFunction(name string, fn interface{}) {
 func (i *Interpreter) Interpret(code string) (interface{}, error) {
 	fset := token.NewFileSet()
 	code = `package main
-	
+	func __main__() any {	
 	` + code + `
+	}
 	`
+	fmt.Println(code)
 	f, err := parser.ParseFile(fset, "", code, parser.Mode(0))
 	if err != nil {
 		return nil, err
 	}
 
 	// 首先处理所有函数定义
-	for _, decl := range f.Decls {
-		if funcDecl, ok := decl.(*ast.FuncDecl); ok {
-			if funcDecl.Name.Name != "__main__" {
-				i.userFuncs[funcDecl.Name.Name] = &Function{
-					params: funcDecl.Type.Params.List,
-					body:   funcDecl.Body,
-				}
-			}
-		}
-	}
+	// for _, decl := range f.Decls {
+	// 	if funcDecl, ok := decl.(*ast.FuncDecl); ok {
+	// 		if funcDecl.Name.Name != "__main__" {
+	// 			i.userFuncs[funcDecl.Name.Name] = &Function{
+	// 				params: funcDecl.Type.Params.List,
+	// 				body:   funcDecl.Body,
+	// 			}
+	// 		}
+	// 	}
+	// }
 
-	// 查找并执行 __main__ 函数
-	for _, decl := range f.Decls {
-		if funcDecl, ok := decl.(*ast.FuncDecl); ok {
-			if funcDecl.Name.Name == "__main__" {
-				return i.eval(funcDecl.Body)
-			}
-		}
-	}
+	// // 查找并执行 __main__ 函数
+	// for _, decl := range f.Decls {
+	// 	if funcDecl, ok := decl.(*ast.FuncDecl); ok {
+	// 		if funcDecl.Name.Name == "__main__" {
+	// 			return i.eval(funcDecl.Body)
+	// 		}
+	// 	}
+	// }
 
-	return nil, fmt.Errorf("没有找到 __main__ 函数")
+	return i.eval(f.Decls[0].(*ast.FuncDecl).Body)
+	// return nil, fmt.Errorf("没有找到 __main__ 函数")
 }
 
 func (i *Interpreter) eval(node ast.Node) (interface{}, error) {
@@ -102,6 +105,14 @@ func (i *Interpreter) eval(node ast.Node) (interface{}, error) {
 		return i.evalIncDecStmt(n)
 	case *ast.ExprStmt:
 		return i.eval(n.X)
+	case *ast.FuncLit:
+		return i.evalFuncLit(n)
+	case *ast.CompositeLit:
+		return i.evalCompositeLit(n)
+	case *ast.KeyValueExpr:
+		return i.evalKeyValueExpr(n)
+	case *ast.IndexExpr:
+		return i.evalIndexExpr(n)
 	default:
 		return nil, fmt.Errorf("unsupported node type: %T", node)
 	}
@@ -248,27 +259,60 @@ func (i *Interpreter) evalAssignStmt(assign *ast.AssignStmt) (interface{}, error
 	}
 
 	switch assign.Tok {
-	case token.DEFINE: // :=
+	case token.DEFINE, token.ASSIGN: // := 或 =
 		for idx, lhs := range assign.Lhs {
-			ident, ok := lhs.(*ast.Ident)
-			if !ok {
-				return nil, fmt.Errorf("非左值表达式")
-			}
-			i.scope.objects[ident.Name] = values[idx]
-		}
-	case token.ASSIGN: // =
-		for idx, lhs := range assign.Lhs {
-			ident, ok := lhs.(*ast.Ident)
-			if !ok {
-				return nil, fmt.Errorf("非左值表达式")
-			}
-			currentScope := i.scope
-			for currentScope != nil {
-				if _, ok := currentScope.objects[ident.Name]; ok {
-					currentScope.objects[ident.Name] = values[idx]
-					break
+			switch l := lhs.(type) {
+			case *ast.Ident:
+				if assign.Tok == token.DEFINE {
+					i.scope.objects[l.Name] = values[idx]
+				} else {
+					// 查找变量并赋值
+					currentScope := i.scope
+					for currentScope != nil {
+						if _, ok := currentScope.objects[l.Name]; ok {
+							currentScope.objects[l.Name] = values[idx]
+							break
+						}
+						currentScope = currentScope.parent
+					}
 				}
-				currentScope = currentScope.parent
+			case *ast.IndexExpr:
+				// 获取容器
+				container, err := i.eval(l.X)
+				if err != nil {
+					return nil, err
+				}
+
+				// 获取索引
+				index, err := i.eval(l.Index)
+				if err != nil {
+					return nil, err
+				}
+
+				// 根据容器类型进行赋值
+				switch c := container.(type) {
+				case map[interface{}]interface{}:
+					c[index] = values[idx]
+				case map[string]interface{}:
+					if strKey, ok := index.(string); ok {
+						c[strKey] = values[idx]
+					} else {
+						return nil, fmt.Errorf("map键必须是字符串类型")
+					}
+				case []interface{}:
+					if intIndex, ok := index.(int); ok {
+						if intIndex < 0 || intIndex >= len(c) {
+							return nil, fmt.Errorf("索引越界")
+						}
+						c[intIndex] = values[idx]
+					} else {
+						return nil, fmt.Errorf("slice索引必须是整数")
+					}
+				default:
+					return nil, fmt.Errorf("不支持的索引赋值操作: %T", container)
+				}
+			default:
+				return nil, fmt.Errorf("不支持的赋值目标类型: %T", l)
 			}
 		}
 	case token.ADD_ASSIGN: // +=
@@ -409,10 +453,10 @@ func (i *Interpreter) evalBinaryExpr(expr *ast.BinaryExpr) (interface{}, error) 
 		return equal(left, right)
 	case token.REM:
 		return mod(left, right)
-	case token.ADD_ASSIGN:
-		return addAssign(left, right)
-	case token.SUB_ASSIGN:
-		return subAssign(left, right)
+	case token.LAND:
+		return and(left, right)
+	case token.LOR:
+		return or(left, right)
 
 	default:
 		return nil, fmt.Errorf("不支持的运算符: %s", expr.Op)
@@ -632,12 +676,22 @@ func mod(a, b interface{}) (interface{}, error) {
 	return nil, fmt.Errorf("无效操作: %T %% %T", a, b)
 }
 
-func addAssign(a, b interface{}) (interface{}, error) {
-	return add(a, b)
+func and(a, b any) (any, error) {
+	left := toBool(a)
+	if !left {
+		return false, nil
+	}
+	right := toBool(b)
+	return right, nil
 }
 
-func subAssign(a, b interface{}) (interface{}, error) {
-	return sub(a, b)
+func or(a, b any) (any, error) {
+	left := toBool(a)
+	if left {
+		return true, nil
+	}
+	right := toBool(b)
+	return right, nil
 }
 
 // 添加处理return语句的函数
@@ -688,6 +742,160 @@ func (i *Interpreter) evalIncDecStmt(stmt *ast.IncDecStmt) (interface{}, error) 
 	return newVal, nil
 }
 
+// 添加新的处理函数字面量的方法
+func (i *Interpreter) evalFuncLit(fn *ast.FuncLit) (interface{}, error) {
+	// 创建一个Function对象来存储函数信息
+	function := &Function{
+		params: fn.Type.Params.List,
+		body:   fn.Body,
+	}
+
+	// 返回一个闭包函数
+	return func(args ...interface{}) (interface{}, error) {
+		// 创建新的作用域
+		prevScope := i.scope
+		newScope := &Scope{
+			parent:  prevScope,
+			objects: make(map[string]interface{}),
+		}
+		i.scope = newScope
+		defer func() { i.scope = prevScope }()
+
+		// 绑定参数
+		if len(args) != len(function.params) {
+			return nil, fmt.Errorf("参数数量不匹配")
+		}
+
+		for idx, param := range function.params {
+			newScope.objects[param.Names[0].Name] = args[idx]
+		}
+
+		// 执行函数体
+		return i.eval(function.body)
+	}, nil
+}
+
+// 处理复合字面量
+func (i *Interpreter) evalCompositeLit(lit *ast.CompositeLit) (interface{}, error) {
+	switch t := lit.Type.(type) {
+	case *ast.MapType:
+		// 创建map
+		m := make(map[interface{}]interface{})
+
+		// 处理每个键值对
+		for _, elt := range lit.Elts {
+			kv, ok := elt.(*ast.KeyValueExpr)
+			if !ok {
+				return nil, fmt.Errorf("map字面量必须是键值对")
+			}
+
+			// 计算键
+			key, err := i.eval(kv.Key)
+			if err != nil {
+				return nil, err
+			}
+
+			// 计算值
+			val, err := i.eval(kv.Value)
+			if err != nil {
+				return nil, err
+			}
+
+			m[key] = val
+		}
+		return m, nil
+
+	case *ast.ArrayType:
+		// 创建slice
+		var slice []interface{}
+		for _, elt := range lit.Elts {
+			val, err := i.eval(elt)
+			if err != nil {
+				return nil, err
+			}
+			slice = append(slice, val)
+		}
+		return slice, nil
+
+	default:
+		return nil, fmt.Errorf("不支持的复合字面量类型: %T", t)
+	}
+}
+
+// 处理键值表达式
+func (i *Interpreter) evalKeyValueExpr(kv *ast.KeyValueExpr) (interface{}, error) {
+	key, err := i.eval(kv.Key)
+	if err != nil {
+		return nil, err
+	}
+
+	value, err := i.eval(kv.Value)
+	if err != nil {
+		return nil, err
+	}
+
+	return map[string]interface{}{
+		"key":   key,
+		"value": value,
+	}, nil
+}
+
+// 处理索引表达式
+func (i *Interpreter) evalIndexExpr(expr *ast.IndexExpr) (interface{}, error) {
+	// 计算被索引的对象
+	container, err := i.eval(expr.X)
+	if err != nil {
+		return nil, err
+	}
+
+	// 计算索引值
+	index, err := i.eval(expr.Index)
+	if err != nil {
+		return nil, err
+	}
+
+	// 根据容器类型进行不同的处理
+	switch c := container.(type) {
+	case map[interface{}]interface{}:
+		// 对于map，直接使用索引作为键
+		return c[index], nil
+
+	case map[string]interface{}:
+		// 如果是string类型的map，需要将索引转换为string
+		if strKey, ok := index.(string); ok {
+			return c[strKey], nil
+		}
+		return nil, fmt.Errorf("map键必须是字符串类型，得到: %T", index)
+
+	case []interface{}:
+		// 对于slice，索引必须是整数
+		switch idx := index.(type) {
+		case int:
+			if idx < 0 || idx >= len(c) {
+				return nil, fmt.Errorf("索引越界: %d", idx)
+			}
+			return c[idx], nil
+		default:
+			return nil, fmt.Errorf("slice索引必须是整数，得到: %T", index)
+		}
+
+	case string:
+		// 对于字符串，索引必须是整数
+		switch idx := index.(type) {
+		case int:
+			if idx < 0 || idx >= len(c) {
+				return nil, fmt.Errorf("索引越界: %d", idx)
+			}
+			return string(c[idx]), nil
+		default:
+			return nil, fmt.Errorf("字符串索引必须是整数，得到: %T", index)
+		}
+
+	default:
+		return nil, fmt.Errorf("不支持的索引操作: %T", container)
+	}
+}
+
 func main() {
 	interp := NewInterpreter()
 
@@ -695,17 +903,24 @@ func main() {
 	interp.RegisterFunction("print", func(s any) {
 		fmt.Printf("%v \n", s)
 	})
+	interp.scope.objects["x"] = 1
 
 	// 执行复杂逻辑
 	code := `
-	func xxx(){
-		print("success")
+	yyy := func(){
+		print("ok")
 	}
-	func __main__() any {
-	xxx()
+	yyy()
+	mp := map[string]any{
+		"x": 1,
+		"y": 2,
+	}
+	mp["x"] = 3
+	mp["y"] = 4
+	
 sum := 0
 for i := 1; i <= 5; i++ {
-	if i % 2 == 0 {
+	if i % 2 == 0 && 1 > 0 {
 		sum += i * 2
 		print(sum)
 	} else {
@@ -715,7 +930,6 @@ for i := 1; i <= 5; i++ {
 }
 	xxx()
 	return sum
-		}
 `
 
 	result, err := interp.Interpret(code)
