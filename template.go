@@ -318,6 +318,22 @@ func (i *Interpreter) evalAssignStmt(assign *ast.AssignStmt) (interface{}, error
 				default:
 					return nil, fmt.Errorf("不支持的索引赋值操作: %T", container)
 				}
+			case *ast.SelectorExpr:
+				// 获取容器
+				container, err := i.eval(l.X)
+				if err != nil {
+					return nil, err
+				}
+
+				// 根据容器类型进行赋值
+				switch c := container.(type) {
+				case map[interface{}]interface{}:
+					c[l.Sel.Name] = values[idx]
+				case map[string]interface{}:
+					c[l.Sel.Name] = values[idx]
+				default:
+					return nil, fmt.Errorf("不支持的选择器赋值操作: %T", container)
+				}
 			default:
 				return nil, fmt.Errorf("不支持的赋值目标类型: %T", l)
 			}
@@ -955,8 +971,9 @@ func main() {
 		"y": 2,
 	}
 	mp["x"] = "shit"
+	yyy(mp.x)
 	mp["y"] = 4
-	mp.x = "shit"
+	mp.x = "shit jian"
 
 	yyy(mp.x)
 	
