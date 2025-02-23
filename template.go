@@ -113,6 +113,8 @@ func (i *Interpreter) eval(node ast.Node) (interface{}, error) {
 		return i.evalKeyValueExpr(n)
 	case *ast.IndexExpr:
 		return i.evalIndexExpr(n)
+	case *ast.SelectorExpr:
+		return i.evalSelectorExpr(n)
 	default:
 		return nil, fmt.Errorf("unsupported node type: %T", node)
 	}
@@ -907,6 +909,32 @@ func (i *Interpreter) evalIndexExpr(expr *ast.IndexExpr) (interface{}, error) {
 	}
 }
 
+// 添加处理选择器表达式的方法
+func (i *Interpreter) evalSelectorExpr(sel *ast.SelectorExpr) (interface{}, error) {
+	// 计算被选择的对象
+	container, err := i.eval(sel.X)
+	if err != nil {
+		return nil, err
+	}
+
+	// 获取选择器名称
+	fieldName := sel.Sel.Name
+
+	// 处理map类型
+	switch c := container.(type) {
+	case map[interface{}]interface{}:
+		if val, ok := c[fieldName]; ok {
+			return val, nil
+		}
+	case map[string]interface{}:
+		if val, ok := c[fieldName]; ok {
+			return val, nil
+		}
+	}
+
+	return nil, fmt.Errorf("无法访问字段 %s: 对象类型 %T 不支持或字段不存在", fieldName, container)
+}
+
 func main() {
 	interp := NewInterpreter()
 
@@ -918,16 +946,19 @@ func main() {
 
 	// 执行复杂逻辑
 	code := `
-	yyy := func(){
-		print("ok")
+	yyy := func(a string){
+		print("ok " + a)
 	}
-	yyy()
+	yyy("shit")
 	mp := map[string]any{
 		"x": 1,
 		"y": 2,
 	}
-	mp["x"] = 3
+	mp["x"] = "shit"
 	mp["y"] = 4
+	mp.x = "shit"
+
+	yyy(mp.x)
 	
 sum := 0
 for i := 1; i <= 5; i++ {
