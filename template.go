@@ -115,6 +115,8 @@ func (i *Interpreter) eval(node ast.Node) (interface{}, error) {
 		return i.evalIndexExpr(n)
 	case *ast.SelectorExpr:
 		return i.evalSelectorExpr(n)
+	case *ast.DeclStmt:
+		return i.evalDeclStmt(n)
 	default:
 		return nil, fmt.Errorf("unsupported node type: %T", node)
 	}
@@ -951,6 +953,35 @@ func (i *Interpreter) evalSelectorExpr(sel *ast.SelectorExpr) (interface{}, erro
 	return nil, fmt.Errorf("无法访问字段 %s: 对象类型 %T 不支持或字段不存在", fieldName, container)
 }
 
+// 添加处理声明语句的方法
+func (i *Interpreter) evalDeclStmt(stmt *ast.DeclStmt) (interface{}, error) {
+	switch decl := stmt.Decl.(type) {
+	case *ast.GenDecl:
+		switch decl.Tok {
+		case token.VAR:
+			for _, spec := range decl.Specs {
+				if valueSpec, ok := spec.(*ast.ValueSpec); ok {
+					// 处理初始值
+					var value interface{} = nil
+					if len(valueSpec.Values) > 0 {
+						var err error
+						value, err = i.eval(valueSpec.Values[0])
+						if err != nil {
+							return nil, err
+						}
+					}
+					// 为每个变量名赋值
+					for _, name := range valueSpec.Names {
+						i.scope.objects[name.Name] = value
+					}
+				}
+			}
+			return nil, nil
+		}
+	}
+	return nil, fmt.Errorf("不支持的声明类型: %T", stmt.Decl)
+}
+
 func main() {
 	interp := NewInterpreter()
 
@@ -970,14 +1001,21 @@ func main() {
 		"x": 1,
 		"y": 2,
 	}
+	mp = make(map[string]any)
 	mp["x"] = "shit"
 	yyy(mp.x)
 	mp["y"] = 4
 	mp.x = "shit jian"
+	var b = 1
 
 	yyy(mp.x)
 	
 sum := 0
+j := 0
+for j < 5 {
+	print(j)
+	j++
+}
 for i := 1; i <= 5; i++ {
 	if i % 2 == 0 && 1 > 0 {
 		sum += i * 2
