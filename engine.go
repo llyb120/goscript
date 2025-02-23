@@ -10,6 +10,8 @@ import (
 	"strings"
 )
 
+var globalReflectCache = NewReflectCache()
+
 type Function struct {
 	params []*ast.Field
 	body   *ast.BlockStmt
@@ -223,27 +225,30 @@ func (i *Interpreter) evalIdent(ident *ast.Ident) (any, error) {
 				v = v.Elem()
 			}
 			if v.Kind() == reflect.Struct {
-				if field := v.FieldByName(ident.Name); field.IsValid() {
-					// 检查字段是否可导出（首字母大写）
-					if field.CanInterface() {
-						return field.Interface(), nil
-					}
-					// 对于私有字段，返回错误
-					return nil, fmt.Errorf("无法访问私有字段: %s", ident.Name)
+				if item, _ := globalReflectCache.get(g, ident.Name); item != nil {
+					return item, nil
 				}
-				// 尝试查找方法
-				if method := v.MethodByName(ident.Name); method.IsValid() {
-					if method.CanInterface() {
-						return method.Interface(), nil
-					}
-					return nil, fmt.Errorf("无法访问私有方法: %s", ident.Name)
-				}
-				// 如果是指针，也查找指针的方法
-				if v.CanAddr() {
-					if method := v.Addr().MethodByName(ident.Name); method.IsValid() {
-						return method.Interface(), nil
-					}
-				}
+				// if field := v.FieldByName(ident.Name); field.IsValid() {
+				// 	// 检查字段是否可导出（首字母大写）
+				// 	if field.CanInterface() {
+				// 		return field.Interface(), nil
+				// 	}
+				// 	// 对于私有字段，返回错误
+				// 	return nil, fmt.Errorf("无法访问私有字段: %s", ident.Name)
+				// }
+				// // 尝试查找方法
+				// if method := v.MethodByName(ident.Name); method.IsValid() {
+				// 	if method.CanInterface() {
+				// 		return method.Interface(), nil
+				// 	}
+				// 	return nil, fmt.Errorf("无法访问私有方法: %s", ident.Name)
+				// }
+				// // 如果是指针，也查找指针的方法
+				// if v.CanAddr() {
+				// 	if method := v.Addr().MethodByName(ident.Name); method.IsValid() {
+				// 		return method.Interface(), nil
+				// 	}
+				// }
 			}
 		}
 	}
@@ -1060,32 +1065,8 @@ func (i *Interpreter) evalSelectorExpr(sel *ast.SelectorExpr) (any, error) {
 		}
 	default:
 		// 处理结构体和指针类型
-		v := reflect.ValueOf(container)
-		if v.Kind() == reflect.Ptr {
-			v = v.Elem()
-		}
-		if v.Kind() == reflect.Struct {
-			// 尝试获取字段
-			if field := v.FieldByName(fieldName); field.IsValid() {
-				// 检查字段是否可导出
-				if field.CanInterface() {
-					return field.Interface(), nil
-				}
-				return nil, fmt.Errorf("无法访问私有字段: %s", fieldName)
-			}
-			// 尝试获取方法
-			if method := v.MethodByName(fieldName); method.IsValid() {
-				if method.CanInterface() {
-					return method.Interface(), nil
-				}
-				return nil, fmt.Errorf("无法访问私有方法: %s", fieldName)
-			}
-			// 如果是指针类型,也尝试获取指针的方法
-			if v.CanAddr() {
-				if method := v.Addr().MethodByName(fieldName); method.IsValid() {
-					return method.Interface(), nil
-				}
-			}
+		if item, _ := globalReflectCache.get(container, fieldName); item != nil {
+			return item, nil
 		}
 	}
 

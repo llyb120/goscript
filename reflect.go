@@ -10,7 +10,7 @@ import (
 
 type reflectCache struct {
 	sync.RWMutex
-	cache map[reflect.Type]reflectCacheItem
+	cache map[reflect.Type]*reflectCacheItem
 }
 
 type fieldInfo struct {
@@ -21,6 +21,7 @@ type fieldInfo struct {
 type methodInfo struct {
 	method  reflect.Method
 	pointer bool // true表示是指针接收器的方法
+	offset  int  // 方法在接口表中的偏移量
 }
 
 type reflectCacheItem struct {
@@ -30,11 +31,11 @@ type reflectCacheItem struct {
 
 func NewReflectCache() *reflectCache {
 	return &reflectCache{
-		cache: make(map[reflect.Type]reflectCacheItem),
+		cache: make(map[reflect.Type]*reflectCacheItem),
 	}
 }
 
-func (r *reflectCache) get(val any) reflectCacheItem {
+func (r *reflectCache) analyze(val any) *reflectCacheItem {
 	t := reflect.TypeOf(val)
 	// originalType := t
 	if t.Kind() == reflect.Ptr {
@@ -57,7 +58,7 @@ func (r *reflectCache) get(val any) reflectCacheItem {
 		return item
 	}
 
-	item := reflectCacheItem{
+	item := &reflectCacheItem{
 		fields:  make(map[string]fieldInfo),
 		methods: make(map[string]methodInfo),
 	}
@@ -81,6 +82,7 @@ func (r *reflectCache) get(val any) reflectCacheItem {
 				item.methods[method.Name] = methodInfo{
 					method:  method,
 					pointer: false,
+					offset:  i, // 记录方法的偏移量
 				}
 			}
 		}
@@ -90,11 +92,11 @@ func (r *reflectCache) get(val any) reflectCacheItem {
 		for i := 0; i < ptrType.NumMethod(); i++ {
 			method := ptrType.Method(i)
 			if method.IsExported() {
-				// 如果值方法中没有这个方法，或者这就是一个指针方法
 				if _, exists := item.methods[method.Name]; !exists {
 					item.methods[method.Name] = methodInfo{
 						method:  method,
 						pointer: true,
+						offset:  i, // 记录方法的偏移量
 					}
 				}
 			}
@@ -106,8 +108,10 @@ func (r *reflectCache) get(val any) reflectCacheItem {
 }
 
 // 获取字段值
-func (r *reflectCache) getValue(obj any, fieldName string) (any, reflect.Type) {
-	item := r.get(obj)
+func (r *reflectCache) getValue(item *reflectCacheItem, obj any, fieldName string) (any, reflect.Type) {
+	if item == nil {
+		item = r.analyze(obj)
+	}
 	if field, ok := item.fields[fieldName]; ok {
 		v := reflect.ValueOf(obj)
 		var base unsafe.Pointer
@@ -128,10 +132,44 @@ func (r *reflectCache) getValue(obj any, fieldName string) (any, reflect.Type) {
 }
 
 // 获取方法
-func (r *reflectCache) getMethod(obj any, methodName string) (reflect.Method, bool, bool) {
-	item := r.get(obj)
-	if method, ok := item.methods[methodName]; ok {
-		return method.method, method.pointer, true
+func (r *reflectCache) getMethod(item *reflectCacheItem, obj any, methodName string) (any, reflect.Type) {
+	if item == nil {
+		item = r.analyze(obj)
 	}
-	return reflect.Method{}, false, false
+	if method, ok := item.methods[methodName]; ok {
+		v := reflect.ValueOf(obj)
+		if method.pointer {
+			// 需要指针接收器
+			if v.Kind() != reflect.Ptr {
+				// 值类型转换为指针
+				newPtr := reflect.New(v.Type())
+				newPtr.Elem().Set(v)
+				v = newPtr
+			}
+		} else {
+			// 需要值接收器
+			if v.Kind() == reflect.Ptr {
+				v = v.Elem()
+			}
+		}
+
+		// 使用方法索引获取方法值
+		m := v.Method(method.offset)
+		return m.Interface(), method.method.Type
+	}
+	return nil, nil
+}
+
+func (r *reflectCache) get(obj any, name string) (any, reflect.Type) {
+	item := r.analyze(obj)
+	if item == nil {
+		return nil, nil
+	}
+	if field, typ := r.getValue(item, obj, name); field != nil {
+		return field, typ
+	}
+	if method, typ := r.getMethod(item, obj, name); method != nil {
+		return method, typ
+	}
+	return nil, nil
 }
