@@ -1,4 +1,4 @@
-package main
+package goscript
 
 import (
 	"fmt"
@@ -41,7 +41,7 @@ func NewInterpreter() *Interpreter {
 	}
 }
 
-func (i *Interpreter) RegisterFunction(name string, fn any) {
+func (i *Interpreter) BindFunction(name string, fn any) {
 	i.funcTable[name] = reflect.ValueOf(fn)
 }
 
@@ -1139,7 +1139,7 @@ func main() {
 	interp := NewInterpreter()
 
 	// 注册内置函数
-	interp.RegisterFunction("print", func(s any) {
+	interp.BindFunction("print", func(s any) {
 		fmt.Printf("%v \n", s)
 	})
 	// interp.BindGlobalObject(map[string]any{

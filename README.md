@@ -34,7 +34,7 @@ func main() {
 ### 注册桥接函数
 
 ```go
-res, err := interp.RegisterFunction("print", print)
+res, err := interp.BindFunction("print", print)
 if err != nil {
     // do something
 }
