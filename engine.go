@@ -160,6 +160,8 @@ func (i *Interpreter) eval(node ast.Node) (any, error) {
 	case *ast.MapType:
 		// 直接支持 map 类型
 		return make(map[string]any), nil
+	case *ast.BranchStmt:
+		return i.evalBranchStmt(n)
 	default:
 		return nil, fmt.Errorf("unsupported node type: %T", node)
 	}
@@ -301,9 +303,24 @@ func (i *Interpreter) evalForStmt(f *ast.ForStmt) (any, error) {
 		}
 
 		// 执行循环体
-		_, err := i.eval(f.Body)
+		result, err := i.eval(f.Body)
 		if err != nil {
 			return nil, err
+		}
+
+		// 处理 break 和 continue
+		switch result.(type) {
+		case breakSentinel:
+			return nil, nil
+		case continueSentinel:
+			// 跳过后续处理，直接进入下一次循环
+			if f.Post != nil {
+				_, err := i.eval(f.Post)
+				if err != nil {
+					return nil, err
+				}
+			}
+			continue
 		}
 
 		// 执行后续操作
@@ -840,7 +857,7 @@ func or(a, b any) (any, error) {
 	return right, nil
 }
 
-// 添加处理return语句的函数
+// 处理return语句的函数
 func (i *Interpreter) evalReturnStmt(ret *ast.ReturnStmt) (any, error) {
 	if len(ret.Results) == 0 {
 		return nil, nil
@@ -888,7 +905,7 @@ func (i *Interpreter) evalIncDecStmt(stmt *ast.IncDecStmt) (any, error) {
 	return newVal, nil
 }
 
-// 添加新的处理函数字面量的方法
+// 新的处理函数字面量的方法
 func (i *Interpreter) evalFuncLit(fn *ast.FuncLit) (any, error) {
 	// 创建一个Function对象来存储函数信息
 	function := &Function{
@@ -1042,7 +1059,7 @@ func (i *Interpreter) evalIndexExpr(expr *ast.IndexExpr) (any, error) {
 	}
 }
 
-// 添加处理选择器表达式的方法
+// 处理选择器表达式的方法
 func (i *Interpreter) evalSelectorExpr(sel *ast.SelectorExpr) (any, error) {
 	// 计算被选择的对象
 	container, err := i.eval(sel.X)
@@ -1073,7 +1090,7 @@ func (i *Interpreter) evalSelectorExpr(sel *ast.SelectorExpr) (any, error) {
 	return nil, fmt.Errorf("无法访问字段 %s: 对象类型 %T 不支持或字段不存在", fieldName, container)
 }
 
-// 添加处理声明语句的方法
+// 处理声明语句的方法
 func (i *Interpreter) evalDeclStmt(stmt *ast.DeclStmt) (any, error) {
 	switch decl := stmt.Decl.(type) {
 	case *ast.GenDecl:
@@ -1101,6 +1118,22 @@ func (i *Interpreter) evalDeclStmt(stmt *ast.DeclStmt) (any, error) {
 	}
 	return nil, fmt.Errorf("不支持的声明类型: %T", stmt.Decl)
 }
+
+// 处理分支语句的方法
+func (i *Interpreter) evalBranchStmt(stmt *ast.BranchStmt) (any, error) {
+	switch stmt.Tok {
+	case token.BREAK:
+		return breakSentinel{}, nil
+	case token.CONTINUE:
+		return continueSentinel{}, nil
+	default:
+		return nil, fmt.Errorf("不支持的分支语句类型: %v", stmt.Tok)
+	}
+}
+
+// 定义哨兵类型用于处理 break 和 continue
+type breakSentinel struct{}
+type continueSentinel struct{}
 
 func main() {
 	interp := NewInterpreter()
@@ -1154,6 +1187,9 @@ j := 0
 for j < 5 {
 	print(j)
 	j++
+	if j > 2 {
+		break	
+	}
 }
 for i := 1; i <= 5; i++ {
 	if i % 2 == 0 && 1 > 0 {
