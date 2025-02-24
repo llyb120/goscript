@@ -1200,7 +1200,6 @@ for i := 1; i <= 5; i++ {
 		print(sum)
 	}
 }
-	return sum
 `
 
 	result, err := interp.Interpret(code)
