@@ -10,6 +10,7 @@ import (
 	"strings"
 )
 
+// 因为类型是有限的，所以可以做一个全局的缓存
 var globalReflectCache = NewReflectCache()
 
 type Function struct {
@@ -18,11 +19,12 @@ type Function struct {
 }
 
 type Interpreter struct {
-	scope     *Scope
-	global    any
-	funcTable map[string]reflect.Value // 内置函数表
-	userFuncs map[string]*Function     // 用户定义的函数表
-	types     map[string]reflect.Type  // 类型表
+	sharedScope *Scope
+	scope       *Scope
+	global      any
+	funcTable   *map[string]reflect.Value // 内置函数表
+	astCache    *astCache
+	isForked    bool
 }
 
 type Scope struct {
@@ -30,16 +32,28 @@ type Scope struct {
 	objects map[string]any
 }
 
+func NewInterpreterWithSharedScope(sharedScope map[string]any) *Interpreter {
+	interp := NewInterpreter()
+	for k, v := range sharedScope {
+		interp.sharedScope.objects[k] = v
+	}
+	return interp
+}
+
 func NewInterpreter() *Interpreter {
 	globalScope := &Scope{
 		objects: make(map[string]any),
 	}
 	interp := &Interpreter{
-		scope:     globalScope,
-		global:    globalScope,
-		funcTable: make(map[string]reflect.Value),
-		userFuncs: make(map[string]*Function),
-		types:     make(map[string]reflect.Type),
+		// sharedScope 只可读不可写
+		// 只在初始化的时候给一次写入的机会
+		sharedScope: globalScope,
+		scope:       globalScope,
+		global:      globalScope,
+		funcTable:   &map[string]reflect.Value{},
+		astCache: &astCache{
+			cache: make(map[string]*ast.File),
+		},
 	}
 
 	// 注册标准库包作为全局作用域中的对象
@@ -48,8 +62,26 @@ func NewInterpreter() *Interpreter {
 	return interp
 }
 
+func (i *Interpreter) Fork() *Interpreter {
+	globalScope := &Scope{
+		objects: make(map[string]any),
+	}
+	return &Interpreter{
+		scope:  globalScope,
+		global: globalScope,
+		// 共享
+		sharedScope: i.sharedScope,
+		funcTable:   i.funcTable,
+		astCache:    i.astCache,
+		isForked:    true,
+	}
+}
+
 func (i *Interpreter) BindFunction(name string, fn any) {
-	i.funcTable[name] = reflect.ValueOf(fn)
+	// 只有主进程可以绑定函数
+	if !i.isForked {
+		(*i.funcTable)[name] = reflect.ValueOf(fn)
+	}
 }
 
 func (i *Interpreter) BindObject(name string, obj any) {
@@ -68,11 +100,13 @@ func (i *Interpreter) Interpret(code string) (any, error) {
 	}
 	`
 	// fmt.Println(code)
-	f, err := parser.ParseFile(fset, "", code, parser.Mode(0))
+	astFile, err := i.astCache.GetIfNotExist(code, func() (*ast.File, error) {
+		return parser.ParseFile(fset, "", code, parser.Mode(0))
+	})
 	if err != nil {
 		return nil, err
 	}
-
+	return i.eval(astFile.Decls[0].(*ast.FuncDecl).Body)
 	// 首先处理所有函数定义
 	// for _, decl := range f.Decls {
 	// 	if funcDecl, ok := decl.(*ast.FuncDecl); ok {
@@ -93,8 +127,6 @@ func (i *Interpreter) Interpret(code string) (any, error) {
 	// 		}
 	// 	}
 	// }
-
-	return i.eval(f.Decls[0].(*ast.FuncDecl).Body)
 	// return nil, fmt.Errorf("没有找到 __main__ 函数")
 }
 
@@ -217,13 +249,13 @@ func (i *Interpreter) evalIdent(ident *ast.Ident) (any, error) {
 		currentScope = currentScope.parent
 	}
 
-	// 检查是否是内置函数
-	if fn, ok := i.funcTable[ident.Name]; ok {
-		return fn, nil
+	// sharedScope 查找
+	if val, ok := i.sharedScope.objects[ident.Name]; ok {
+		return val, nil
 	}
 
-	// 检查是否是用户定义的函数
-	if fn, ok := i.userFuncs[ident.Name]; ok {
+	// 检查是否是内置函数
+	if fn, ok := (*i.funcTable)[ident.Name]; ok {
 		return fn, nil
 	}
 
@@ -1170,10 +1202,6 @@ func (i *Interpreter) resolveType(expr ast.Expr) (reflect.Type, error) {
 		case "float64":
 			return reflect.TypeOf(0.0), nil
 		default:
-			// 查找自定义类型
-			if typ, ok := i.types[t.Name]; ok {
-				return typ, nil
-			}
 			return nil, fmt.Errorf("未知类型: %s", t.Name)
 		}
 	case *ast.SelectorExpr:
