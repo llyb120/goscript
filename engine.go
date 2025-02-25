@@ -22,38 +22,29 @@ type Function struct {
 }
 
 type Interpreter struct {
-	sharedScope *Scope
+	sharedScope *SharedScope
 	scope       *Scope
 	global      any
-	funcTable   *map[string]reflect.Value // 内置函数表
 	astCache    *astCache
 	isForked    bool
-}
-
-type Scope struct {
-	parent  *Scope
-	objects map[string]any
 }
 
 func NewInterpreterWithSharedScope(sharedScope map[string]any) *Interpreter {
 	interp := NewInterpreter()
 	for k, v := range sharedScope {
-		interp.sharedScope.objects[k] = v
+		interp.sharedScope.Store(k, v)
 	}
 	return interp
 }
 
 func NewInterpreter() *Interpreter {
-	globalScope := &Scope{
-		objects: make(map[string]any),
-	}
+	globalScope := &Scope{}
 	interp := &Interpreter{
 		// sharedScope 只可读不可写
 		// 只在初始化的时候给一次写入的机会
-		sharedScope: globalScope,
+		sharedScope: &SharedScope{},
 		scope:       globalScope,
 		global:      globalScope,
-		funcTable:   &map[string]reflect.Value{},
 		astCache: &astCache{
 			cache: make(map[string]*ast.File),
 		},
@@ -66,15 +57,12 @@ func NewInterpreter() *Interpreter {
 }
 
 func (i *Interpreter) Fork() *Interpreter {
-	globalScope := &Scope{
-		objects: make(map[string]any),
-	}
+	globalScope := &Scope{}
 	return &Interpreter{
 		scope:  globalScope,
 		global: globalScope,
 		// 共享
 		sharedScope: i.sharedScope,
-		funcTable:   i.funcTable,
 		astCache:    i.astCache,
 		isForked:    true,
 	}
@@ -82,13 +70,17 @@ func (i *Interpreter) Fork() *Interpreter {
 
 func (i *Interpreter) BindFunction(name string, fn any) {
 	// 只有主进程可以绑定函数
-	if !i.isForked {
-		(*i.funcTable)[name] = reflect.ValueOf(fn)
+	if i.isForked {
+		return
 	}
+	if _, ok := i.sharedScope.Load(name); ok {
+		return
+	}
+	i.sharedScope.Store(name, reflect.ValueOf(fn))
 }
 
 func (i *Interpreter) BindObject(name string, obj any) {
-	i.scope.objects[name] = obj
+	i.scope.Store(name, obj)
 }
 
 func (i *Interpreter) BindGlobalObject(obj any) {
@@ -246,20 +238,15 @@ func (i *Interpreter) evalIdent(ident *ast.Ident) (any, error) {
 	// 作用域链查找
 	currentScope := i.scope
 	for currentScope != nil {
-		if val, ok := currentScope.objects[ident.Name]; ok {
+		if val, ok := currentScope.Load(ident.Name); ok {
 			return val, nil
 		}
 		currentScope = currentScope.parent
 	}
 
 	// sharedScope 查找
-	if val, ok := i.sharedScope.objects[ident.Name]; ok {
+	if val, ok := i.sharedScope.Load(ident.Name); ok {
 		return val, nil
-	}
-
-	// 检查是否是内置函数
-	if fn, ok := (*i.funcTable)[ident.Name]; ok {
-		return fn, nil
 	}
 
 	// 尝试从 __global__ 中获取
@@ -313,8 +300,7 @@ func (i *Interpreter) evalBlockStmt(block *ast.BlockStmt) (any, error) {
 	// 创建新的作用域
 	prevScope := i.scope
 	i.scope = &Scope{
-		parent:  prevScope,
-		objects: make(map[string]any),
+		parent: prevScope,
 	}
 	defer func() { i.scope = prevScope }() // 确保作用域恢复
 
@@ -426,13 +412,13 @@ func (i *Interpreter) evalAssignStmt(assign *ast.AssignStmt) (any, error) {
 			switch l := lhs.(type) {
 			case *ast.Ident:
 				if assign.Tok == token.DEFINE {
-					i.scope.objects[l.Name] = values[idx]
+					i.scope.Store(l.Name, values[idx])
 				} else {
 					// 查找变量并赋值
 					currentScope := i.scope
 					for currentScope != nil {
-						if _, ok := currentScope.objects[l.Name]; ok {
-							currentScope.objects[l.Name] = values[idx]
+						if _, ok := currentScope.Load(l.Name); ok {
+							currentScope.Store(l.Name, values[idx])
 							break
 						}
 						currentScope = currentScope.parent
@@ -512,8 +498,8 @@ func (i *Interpreter) evalAssignStmt(assign *ast.AssignStmt) (any, error) {
 			// 更新值
 			currentScope := i.scope
 			for currentScope != nil {
-				if _, ok := currentScope.objects[ident.Name]; ok {
-					currentScope.objects[ident.Name] = newVal
+				if _, ok := currentScope.Load(ident.Name); ok {
+					currentScope.Store(ident.Name, newVal)
 					break
 				}
 				currentScope = currentScope.parent
@@ -565,8 +551,7 @@ func (i *Interpreter) evalCallExpr(call *ast.CallExpr) (any, error) {
 		// 创建新的作用域
 		prevScope := i.scope
 		newScope := &Scope{
-			parent:  prevScope,
-			objects: make(map[string]any),
+			parent: prevScope,
 		}
 		i.scope = newScope
 		defer func() { i.scope = prevScope }()
@@ -578,7 +563,7 @@ func (i *Interpreter) evalCallExpr(call *ast.CallExpr) (any, error) {
 
 		// 绑定参数到新作用域
 		for idx, param := range fn.params {
-			newScope.objects[param.Names[0].Name] = args[idx]
+			newScope.Store(param.Names[0].Name, args[idx])
 		}
 
 		// 执行函数体
@@ -960,8 +945,8 @@ func (i *Interpreter) evalIncDecStmt(stmt *ast.IncDecStmt) (any, error) {
 	// 更新变量值
 	currentScope := i.scope
 	for currentScope != nil {
-		if _, ok := currentScope.objects[ident.Name]; ok {
-			currentScope.objects[ident.Name] = newVal
+		if _, ok := currentScope.Load(ident.Name); ok {
+			currentScope.Store(ident.Name, newVal)
 			break
 		}
 		currentScope = currentScope.parent
@@ -983,8 +968,7 @@ func (i *Interpreter) evalFuncLit(fn *ast.FuncLit) (any, error) {
 		// 创建新的作用域
 		prevScope := i.scope
 		newScope := &Scope{
-			parent:  prevScope,
-			objects: make(map[string]any),
+			parent: prevScope,
 		}
 		i.scope = newScope
 		defer func() { i.scope = prevScope }()
@@ -995,7 +979,7 @@ func (i *Interpreter) evalFuncLit(fn *ast.FuncLit) (any, error) {
 		}
 
 		for idx, param := range function.params {
-			newScope.objects[param.Names[0].Name] = args[idx]
+			newScope.Store(param.Names[0].Name, args[idx])
 		}
 
 		// 执行函数体
@@ -1202,7 +1186,7 @@ func (i *Interpreter) evalDeclStmt(stmt *ast.DeclStmt) (any, error) {
 
 					// 为每个变量名赋值
 					for _, name := range valueSpec.Names {
-						i.scope.objects[name.Name] = value
+						i.scope.Store(name.Name, value)
 					}
 				}
 			}
