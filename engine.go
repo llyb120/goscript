@@ -60,7 +60,7 @@ func (i *Interpreter) Interpret(code string) (any, error) {
 	` + code + `
 	}
 	`
-	fmt.Println(code)
+	// fmt.Println(code)
 	f, err := parser.ParseFile(fset, "", code, parser.Mode(0))
 	if err != nil {
 		return nil, err
@@ -173,6 +173,12 @@ func (i *Interpreter) evalBasicLit(lit *ast.BasicLit) (any, error) {
 	case token.INT:
 		return strconv.Atoi(lit.Value)
 	case token.STRING:
+		// 处理字符串字面量，支持双引号和反引号
+		if strings.HasPrefix(lit.Value, "`") && strings.HasSuffix(lit.Value, "`") {
+			// 反引号字符串，直接去掉首尾的反引号
+			return lit.Value[1 : len(lit.Value)-1], nil
+		}
+		// 双引号字符串，去掉首尾的双引号
 		return strings.Trim(lit.Value, `"`), nil
 	case token.FLOAT:
 		return strconv.ParseFloat(lit.Value, 64)
@@ -1200,6 +1206,7 @@ for i := 1; i <= 5; i++ {
 		print(sum)
 	}
 }
+return sum
 `
 
 	result, err := interp.Interpret(code)
