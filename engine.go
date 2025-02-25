@@ -13,6 +13,9 @@ import (
 // 因为类型是有限的，所以可以做一个全局的缓存
 var globalReflectCache = NewReflectCache()
 
+// 类型安全的undefined
+var Undefined = &struct{}{}
+
 type Function struct {
 	params []*ast.Field
 	body   *ast.BlockStmt
@@ -300,7 +303,9 @@ func (i *Interpreter) evalIdent(ident *ast.Ident) (any, error) {
 		}
 	}
 
-	return nil, fmt.Errorf("未定义的标识符: %s", ident.Name)
+	fmt.Println("warn: 未定义的标识符: ", ident.Name)
+	return Undefined, nil
+	// return nil, fmt.Errorf("未定义的标识符: %s", ident.Name)
 }
 
 // 处理代码块
@@ -692,6 +697,12 @@ func toBool(val any) bool {
 
 // 算术运算实现
 func add(a, b any) (any, error) {
+	if a == Undefined {
+		a = ""
+	}
+	if b == Undefined {
+		b = ""
+	}
 	switch a := a.(type) {
 	case int:
 		switch b := b.(type) {
@@ -699,6 +710,8 @@ func add(a, b any) (any, error) {
 			return a + b, nil
 		case float64:
 			return float64(a) + b, nil
+		case string:
+			return fmt.Sprintf("%d%s", a, b), nil
 		}
 	case float64:
 		switch b := b.(type) {
@@ -706,10 +719,17 @@ func add(a, b any) (any, error) {
 			return a + float64(b), nil
 		case float64:
 			return a + b, nil
+		case string:
+			return fmt.Sprintf("%f%s", a, b), nil
 		}
 	case string:
-		if bStr, ok := b.(string); ok {
-			return a + bStr, nil
+		switch b := b.(type) {
+		case int:
+			return fmt.Sprintf("%s%d", a, b), nil
+		case float64:
+			return fmt.Sprintf("%s%f", a, b), nil
+		case string:
+			return a + b, nil
 		}
 	}
 	return nil, fmt.Errorf("类型不匹配: %T + %T", a, b)
@@ -1112,6 +1132,11 @@ func (i *Interpreter) evalSelectorExpr(sel *ast.SelectorExpr) (any, error) {
 		return nil, err
 	}
 
+	if container == Undefined {
+		fmt.Printf("warn: 选择器表达式对象为undefined: %v.%s \n", sel.X, sel.Sel.Name)
+		return Undefined, nil
+	}
+
 	// 获取选择器名称
 	fieldName := sel.Sel.Name
 
@@ -1306,7 +1331,9 @@ func main() {
 
 	// 执行复杂逻辑
 	code := `
-	fmt.Println("hello")
+	a = a + 1
+	fmt.Println("hello" + a)
+	fmt.Println("world" + a.b)
 	var a strings.Builder
 	a.WriteString("hello")
 	print(a.String())
