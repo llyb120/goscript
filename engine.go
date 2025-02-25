@@ -22,6 +22,7 @@ type Interpreter struct {
 	global    any
 	funcTable map[string]reflect.Value // 内置函数表
 	userFuncs map[string]*Function     // 用户定义的函数表
+	types     map[string]reflect.Type  // 类型表
 }
 
 type Scope struct {
@@ -33,12 +34,18 @@ func NewInterpreter() *Interpreter {
 	globalScope := &Scope{
 		objects: make(map[string]any),
 	}
-	return &Interpreter{
+	interp := &Interpreter{
 		scope:     globalScope,
 		global:    globalScope,
 		funcTable: make(map[string]reflect.Value),
 		userFuncs: make(map[string]*Function),
+		types:     make(map[string]reflect.Type),
 	}
+
+	// 注册标准库包作为全局作用域中的对象
+	interp.registerStandardPackages()
+
+	return interp
 }
 
 func (i *Interpreter) BindFunction(name string, fn any) {
@@ -1104,6 +1111,18 @@ func (i *Interpreter) evalDeclStmt(stmt *ast.DeclStmt) (any, error) {
 		case token.VAR:
 			for _, spec := range decl.Specs {
 				if valueSpec, ok := spec.(*ast.ValueSpec); ok {
+					// 处理类型
+					var varType reflect.Type
+					if valueSpec.Type != nil {
+						// 解析类型表达式
+						typeExpr := valueSpec.Type
+						resolvedType, err := i.resolveType(typeExpr)
+						if err != nil {
+							return nil, err
+						}
+						varType = resolvedType
+					}
+
 					// 处理初始值
 					var value any = nil
 					if len(valueSpec.Values) > 0 {
@@ -1112,7 +1131,18 @@ func (i *Interpreter) evalDeclStmt(stmt *ast.DeclStmt) (any, error) {
 						if err != nil {
 							return nil, err
 						}
+					} else if varType != nil {
+						// 如果有类型但没有初始值，创建零值
+						// 对于结构体类型，创建指针
+						if varType.Kind() == reflect.Struct {
+							// 创建指向结构体的指针
+							value = reflect.New(varType).Interface()
+						} else {
+							// 其他类型使用零值
+							value = reflect.New(varType).Elem().Interface()
+						}
 					}
+
 					// 为每个变量名赋值
 					for _, name := range valueSpec.Names {
 						i.scope.objects[name.Name] = value
@@ -1123,6 +1153,90 @@ func (i *Interpreter) evalDeclStmt(stmt *ast.DeclStmt) (any, error) {
 		}
 	}
 	return nil, fmt.Errorf("不支持的声明类型: %T", stmt.Decl)
+}
+
+// 解析类型表达式
+func (i *Interpreter) resolveType(expr ast.Expr) (reflect.Type, error) {
+	switch t := expr.(type) {
+	case *ast.Ident:
+		// 简单标识符，如 int, string 等
+		switch t.Name {
+		case "int":
+			return reflect.TypeOf(0), nil
+		case "string":
+			return reflect.TypeOf(""), nil
+		case "bool":
+			return reflect.TypeOf(false), nil
+		case "float64":
+			return reflect.TypeOf(0.0), nil
+		default:
+			// 查找自定义类型
+			if typ, ok := i.types[t.Name]; ok {
+				return typ, nil
+			}
+			return nil, fmt.Errorf("未知类型: %s", t.Name)
+		}
+	case *ast.SelectorExpr:
+		// 包限定类型，如 strings.Builder
+		if x, ok := t.X.(*ast.Ident); ok {
+			packageName := x.Name
+
+			// 从作用域中查找包
+			pkg, err := i.evalIdent(x)
+			if err != nil {
+				return nil, fmt.Errorf("未找到包: %s", packageName)
+			}
+
+			// 检查包是否是 map
+			pkgMap, ok := pkg.(map[string]any)
+			if !ok {
+				return nil, fmt.Errorf("%s 不是一个包", packageName)
+			}
+
+			// 查找类型
+			if typeObj, ok := pkgMap[t.Sel.Name]; ok {
+				if reflectType, ok := typeObj.(reflect.Type); ok {
+					return reflectType, nil
+				}
+				return nil, fmt.Errorf("%s.%s 不是类型", packageName, t.Sel.Name)
+			}
+			return nil, fmt.Errorf("包 %s 中没有类型 %s", packageName, t.Sel.Name)
+		}
+		return nil, fmt.Errorf("无效的类型选择器: %T", t.X)
+	case *ast.ArrayType:
+		// 数组或切片类型
+		elemType, err := i.resolveType(t.Elt)
+		if err != nil {
+			return nil, err
+		}
+		if t.Len == nil {
+			// 切片类型
+			return reflect.SliceOf(elemType), nil
+		}
+		// 数组类型
+		lenExpr, err := i.eval(t.Len)
+		if err != nil {
+			return nil, err
+		}
+		length, ok := lenExpr.(int)
+		if !ok {
+			return nil, fmt.Errorf("数组长度必须是整数")
+		}
+		return reflect.ArrayOf(length, elemType), nil
+	case *ast.MapType:
+		// Map 类型
+		keyType, err := i.resolveType(t.Key)
+		if err != nil {
+			return nil, err
+		}
+		valueType, err := i.resolveType(t.Value)
+		if err != nil {
+			return nil, err
+		}
+		return reflect.MapOf(keyType, valueType), nil
+	default:
+		return nil, fmt.Errorf("不支持的类型表达式: %T", expr)
+	}
 }
 
 // 处理分支语句的方法
@@ -1164,6 +1278,16 @@ func main() {
 
 	// 执行复杂逻辑
 	code := `
+	fmt.Println("hello")
+	var a strings.Builder
+	a.WriteString("hello")
+	print(a.String())
+
+	var b string
+	b = "hello" + "world"
+	print(b)
+	
+	print("begin abc")
 	print(X)
 	print("bar")
 
