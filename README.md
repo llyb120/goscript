@@ -77,10 +77,61 @@ interp.BindGlobalObject(test{
 
 ```go
 // script
-print(x) //will print 1
-y("hello") //will print fomat by y   hello
-G.y("hello") //will print fomat by y   hello
-G.Bar() //will print Bar
+a = a + 1 //will not panic
+fmt.Println("hello" + a)
+fmt.Println("world" + a.b)
+var a strings.Builder
+a.WriteString("hello")
+print(a.String())
+
+var b string
+b = "hello" + "world"
+print(b)
+
+print("begin abc")
+print(X)
+print("bar")
+
+Y("bar")
+
+G.Bar()
+
+yyy := func(a string){
+	print("ok " + a)
+}
+yyy("foo")
+mp := map[string]any{
+	"x": 1,
+	"y": 2,
+}
+mp = make(map[string]any)
+mp["x"] = "foo"
+yyy(mp.x)
+mp["y"] = 4
+mp.x = "foo jian"
+var b = 1
+
+yyy(mp.x)
+	
+sum := 0
+j := 0
+for j < 5 {
+	print(j)
+	j++
+	if j > 2 {
+		break	
+	}
+}
+for i := 1; i <= 5; i++ {
+	if i % 2 == 0 && 1 > 0 {
+		sum += i * 2
+		print(sum)
+	} else {
+		sum += i
+		print(sum)
+	}
+}
+return sum
 ```
 
 
