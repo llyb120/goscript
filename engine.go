@@ -196,6 +196,8 @@ func (i *Interpreter) eval(node ast.Node) (any, error) {
 		return make(map[string]any), nil
 	case *ast.BranchStmt:
 		return i.evalBranchStmt(n)
+	case *ast.RangeStmt:
+		return i.evalRangeStmt(n)
 	default:
 		return nil, fmt.Errorf("unsupported node type: %T", node)
 	}
@@ -1292,6 +1294,75 @@ func (i *Interpreter) evalBranchStmt(stmt *ast.BranchStmt) (any, error) {
 type breakSentinel struct{}
 type continueSentinel struct{}
 
+func (i *Interpreter) evalRangeStmt(node *ast.RangeStmt) (any, error) {
+	// 获取要遍历的值
+	val, err := i.eval(node.X)
+	if err != nil {
+		return nil, err
+	}
+
+	// 使用反射获取值
+	rval := reflect.ValueOf(val)
+
+	switch rval.Kind() {
+	case reflect.Slice, reflect.Array:
+		// 遍历切片或数组
+		for n := 0; n < rval.Len(); n++ {
+			if node.Key != nil {
+				// 设置索引变量
+				i.scope.Store(node.Key.(*ast.Ident).Name, n)
+			}
+			if node.Value != nil {
+				// 设置值变量
+				i.scope.Store(node.Value.(*ast.Ident).Name, rval.Index(n).Interface())
+			}
+			// 执行循环体
+			result, err := i.eval(node.Body)
+			if err != nil {
+				return nil, err
+			}
+			// 处理 break 和 continue
+			if _, ok := result.(breakSentinel); ok {
+				return nil, nil
+			}
+			if _, ok := result.(continueSentinel); ok {
+				continue
+			}
+		}
+
+	case reflect.Map:
+		// 遍历 map
+		iter := rval.MapRange()
+		for iter.Next() {
+			if node.Key != nil {
+				// 设置键变量
+				i.scope.Store(node.Key.(*ast.Ident).Name, iter.Key().Interface())
+			}
+			if node.Value != nil {
+				// 设置值变量
+				i.scope.Store(node.Value.(*ast.Ident).Name, iter.Value().Interface())
+			}
+			// 执行循环体
+			result, err := i.eval(node.Body)
+			if err != nil {
+				return nil, err
+			}
+			// 处理 break 和 continue
+			if _, ok := result.(breakSentinel); ok {
+				return nil, nil
+			}
+			if _, ok := result.(continueSentinel); ok {
+				continue
+			}
+		}
+
+	default:
+		return nil, fmt.Errorf("range: cannot range over %v (type %T)", val, val)
+	}
+
+	return nil, nil
+}
+
 func main() {
 	interp := NewInterpreter()
 
@@ -1369,9 +1440,15 @@ for i := 1; i <= 5; i++ {
 		print(sum)
 	}
 }
+	mp := map[string]any{
+		"x": 1,
+		"y": 2,
+	}
+	for k, v := range mp {
+		print(k + " " + v)
+	}
 return sum
 `
-
 	result, err := interp.Interpret(code)
 	if err != nil {
 		panic(err)
