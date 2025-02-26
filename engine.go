@@ -1381,6 +1381,9 @@ func main() {
 		basetest: basetest{
 			X: 222,
 		},
+		basetest2: basetest2{
+			YYY: 333,
+		},
 		Y: func(s string) {
 			fmt.Printf("fomat by y   %v \n", s)
 		},
@@ -1391,6 +1394,7 @@ func main() {
 	a = a + 1
 	Foo()
 	print(X)
+	print(YYY)
 	print(G.X)
 	fmt.Println("hello" + a)
 	fmt.Println("world" + a.b)

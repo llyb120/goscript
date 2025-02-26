@@ -92,37 +92,45 @@ func (r *reflectCache) getOrCreateCacheItem(t reflect.Type) *reflectCacheItem {
 func (r *reflectCache) cacheFields(item *reflectCacheItem, t reflect.Type) {
 	for i := 0; i < t.NumField(); i++ {
 		field := t.Field(i)
-		if field.IsExported() {
+		// 对于内嵌字段，不需要检查是否导出
+		if field.IsExported() || field.Anonymous {
+			// 计算真实的内存偏移量
+			fieldOffset := field.Offset
+
 			item.fields[field.Name] = fieldInfo{
-				offset: field.Offset,
+				offset: fieldOffset,
 				typ:    field.Type,
 			}
 
-		}
-
-		// 处理嵌入字段
-		if field.Anonymous {
-			fieldType := field.Type
-			if fieldType.Kind() == reflect.Ptr {
-				fieldType = fieldType.Elem()
-			}
-			if fieldType.Kind() == reflect.Struct {
-				item.embeddedTypes = append(item.embeddedTypes, fieldType)
-
-				// 递归处理嵌入字段的字段和方法
-				embeddedItem := r.getOrCreateCacheItem(fieldType)
-
-				// 缓存嵌入字段的字段
-				for name, info := range embeddedItem.fields {
-					if _, exists := item.fields[name]; !exists {
-						item.fields[name] = info
-					}
+			// 处理嵌入字段
+			if field.Anonymous {
+				fieldType := field.Type
+				if fieldType.Kind() == reflect.Ptr {
+					fieldType = fieldType.Elem()
 				}
+				if fieldType.Kind() == reflect.Struct {
+					item.embeddedTypes = append(item.embeddedTypes, fieldType)
 
-				// 缓存嵌入字段的方法
-				for methodName, methodInfo := range embeddedItem.methods {
-					if _, exists := item.methods[methodName]; !exists {
-						item.methods[methodName] = methodInfo
+					// 递归处理嵌入字段的字段和方法
+					embeddedItem := r.getOrCreateCacheItem(fieldType)
+
+					// 缓存嵌入字段的字段，并调整偏移量
+					for name, info := range embeddedItem.fields {
+						if _, exists := item.fields[name]; !exists {
+							// 计算真实的内存偏移量：基础偏移量 + 嵌入字段内的偏移量
+							realOffset := fieldOffset + info.offset
+							item.fields[name] = fieldInfo{
+								offset: realOffset,
+								typ:    info.typ,
+							}
+						}
+					}
+
+					// 缓存嵌入字段的方法
+					for methodName, methodInfo := range embeddedItem.methods {
+						if _, exists := item.methods[methodName]; !exists {
+							item.methods[methodName] = methodInfo
+						}
 					}
 				}
 			}
