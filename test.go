@@ -2,8 +2,16 @@ package goscript
 
 import "fmt"
 
-type test struct {
+type basetest struct {
 	X int
+}
+
+func (b *basetest) Foo() {
+	fmt.Printf("Foo %v \n", b.X)
+}
+
+type test struct {
+	basetest
 	Y func(string)
 }
 

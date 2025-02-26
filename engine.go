@@ -1378,7 +1378,9 @@ func main() {
 	// })
 
 	interp.BindGlobalObject(test{
-		X: 222,
+		basetest: basetest{
+			X: 222,
+		},
 		Y: func(s string) {
 			fmt.Printf("fomat by y   %v \n", s)
 		},
@@ -1387,6 +1389,9 @@ func main() {
 	// 执行复杂逻辑
 	code := `
 	a = a + 1
+	Foo()
+	print(X)
+	print(G.X)
 	fmt.Println("hello" + a)
 	fmt.Println("world" + a.b)
 	var a strings.Builder

@@ -25,8 +25,9 @@ type methodInfo struct {
 }
 
 type reflectCacheItem struct {
-	fields  map[string]fieldInfo
-	methods map[string]methodInfo
+	fields        map[string]fieldInfo
+	methods       map[string]methodInfo
+	embeddedTypes []reflect.Type
 }
 
 func NewReflectCache() *reflectCache {
@@ -37,7 +38,6 @@ func NewReflectCache() *reflectCache {
 
 func (r *reflectCache) analyze(val any) *reflectCacheItem {
 	t := reflect.TypeOf(val)
-	// originalType := t
 	if t.Kind() == reflect.Ptr {
 		t = t.Elem()
 	}
@@ -58,53 +58,106 @@ func (r *reflectCache) analyze(val any) *reflectCacheItem {
 		return item
 	}
 
-	item := &reflectCacheItem{
-		fields:  make(map[string]fieldInfo),
-		methods: make(map[string]methodInfo),
+	item := r.getOrCreateCacheItem(t)
+	r.cache[t] = item
+	return item
+}
+
+// 获取或创建缓存项
+func (r *reflectCache) getOrCreateCacheItem(t reflect.Type) *reflectCacheItem {
+	// 检查缓存中是否已存在
+	if item, ok := r.cache[t]; ok {
+		return item
 	}
 
-	// 缓存字段
+	item := &reflectCacheItem{
+		fields:        make(map[string]fieldInfo),
+		methods:       make(map[string]methodInfo),
+		embeddedTypes: []reflect.Type{},
+	}
+
+	// 处理结构体
 	if t.Kind() == reflect.Struct {
-		for i := 0; i < t.NumField(); i++ {
-			field := t.Field(i)
-			if field.IsExported() {
-				item.fields[field.Name] = fieldInfo{
-					offset: field.Offset,
-					typ:    field.Type,
-				}
+		// 缓存字段和嵌入类型
+		r.cacheFields(item, t)
+	}
+
+	// 缓存方法（包括值接收器和指针接收器的方法）
+	r.cacheMethods(item, t)
+
+	return item
+}
+
+// 缓存字段
+func (r *reflectCache) cacheFields(item *reflectCacheItem, t reflect.Type) {
+	for i := 0; i < t.NumField(); i++ {
+		field := t.Field(i)
+		if field.IsExported() {
+			item.fields[field.Name] = fieldInfo{
+				offset: field.Offset,
+				typ:    field.Type,
 			}
+
 		}
 
-		// 缓存值接收器的方法
-		for i := 0; i < t.NumMethod(); i++ {
-			method := t.Method(i)
-			if method.IsExported() {
-				item.methods[method.Name] = methodInfo{
-					method:  method,
-					pointer: false,
-					offset:  i, // 记录方法的偏移量
-				}
+		// 处理嵌入字段
+		if field.Anonymous {
+			fieldType := field.Type
+			if fieldType.Kind() == reflect.Ptr {
+				fieldType = fieldType.Elem()
 			}
-		}
+			if fieldType.Kind() == reflect.Struct {
+				item.embeddedTypes = append(item.embeddedTypes, fieldType)
 
-		// 缓存指针接收器的方法
-		ptrType := reflect.PtrTo(t)
-		for i := 0; i < ptrType.NumMethod(); i++ {
-			method := ptrType.Method(i)
-			if method.IsExported() {
-				if _, exists := item.methods[method.Name]; !exists {
-					item.methods[method.Name] = methodInfo{
-						method:  method,
-						pointer: true,
-						offset:  i, // 记录方法的偏移量
+				// 递归处理嵌入字段的字段和方法
+				embeddedItem := r.getOrCreateCacheItem(fieldType)
+
+				// 缓存嵌入字段的字段
+				for name, info := range embeddedItem.fields {
+					if _, exists := item.fields[name]; !exists {
+						item.fields[name] = info
+					}
+				}
+
+				// 缓存嵌入字段的方法
+				for methodName, methodInfo := range embeddedItem.methods {
+					if _, exists := item.methods[methodName]; !exists {
+						item.methods[methodName] = methodInfo
 					}
 				}
 			}
 		}
 	}
+}
 
-	r.cache[t] = item
-	return item
+// 缓存方法
+func (r *reflectCache) cacheMethods(item *reflectCacheItem, t reflect.Type) {
+	// 缓存值接收器的方法
+	for i := 0; i < t.NumMethod(); i++ {
+		method := t.Method(i)
+		if method.IsExported() {
+			item.methods[method.Name] = methodInfo{
+				method:  method,
+				pointer: false,
+				offset:  i,
+			}
+		}
+	}
+
+	// 缓存指针接收器的方法
+	ptrType := reflect.PtrTo(t)
+	for i := 0; i < ptrType.NumMethod(); i++ {
+		method := ptrType.Method(i)
+		if method.IsExported() {
+			if _, exists := item.methods[method.Name]; !exists {
+				item.methods[method.Name] = methodInfo{
+					method:  method,
+					pointer: true,
+					offset:  i,
+				}
+			}
+		}
+	}
 }
 
 // 获取字段值
@@ -118,13 +171,11 @@ func (r *reflectCache) getValue(item *reflectCacheItem, obj any, fieldName strin
 		if v.Kind() == reflect.Ptr {
 			base = unsafe.Pointer(v.Pointer())
 		} else {
-			// 值类型需要先获取数据的地址
 			ptr := reflect.New(v.Type())
 			ptr.Elem().Set(v)
 			base = unsafe.Pointer(ptr.Pointer())
 		}
 
-		// 统一使用反射获取字段值
 		ptr := unsafe.Pointer(uintptr(base) + field.offset)
 		return reflect.NewAt(field.typ, ptr).Elem().Interface(), field.typ
 	}
@@ -136,24 +187,21 @@ func (r *reflectCache) getMethod(item *reflectCacheItem, obj any, methodName str
 	if item == nil {
 		item = r.analyze(obj)
 	}
+
 	if method, ok := item.methods[methodName]; ok {
 		v := reflect.ValueOf(obj)
 		if method.pointer {
-			// 需要指针接收器
 			if v.Kind() != reflect.Ptr {
-				// 值类型转换为指针
 				newPtr := reflect.New(v.Type())
 				newPtr.Elem().Set(v)
 				v = newPtr
 			}
 		} else {
-			// 需要值接收器
 			if v.Kind() == reflect.Ptr {
 				v = v.Elem()
 			}
 		}
 
-		// 使用方法索引获取方法值
 		m := v.Method(method.offset)
 		return m.Interface(), method.method.Type
 	}
