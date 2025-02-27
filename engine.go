@@ -200,6 +200,8 @@ func (i *Interpreter) eval(node ast.Node) (any, error) {
 		return i.evalRangeStmt(n)
 	case *ast.UnaryExpr:
 		return i.evalUnaryExpr(n)
+	case *ast.GoStmt:
+		return i.evalGoStmt(n)
 	default:
 		return nil, fmt.Errorf("unsupported node type: %T", node)
 	}
@@ -1397,6 +1399,22 @@ func (i *Interpreter) evalUnaryExpr(expr *ast.UnaryExpr) (any, error) {
 	default:
 		return nil, fmt.Errorf("不支持的一元操作符: %v", expr.Op)
 	}
+}
+
+// 处理 go 语句
+func (i *Interpreter) evalGoStmt(stmt *ast.GoStmt) (any, error) {
+	// 创建一个新的解释器实例用于 goroutine
+	newInterp := i.Fork()
+
+	go func() {
+		// 在新的 goroutine 中执行函数调用
+		_, err := newInterp.eval(stmt.Call)
+		if err != nil {
+			fmt.Printf("Goroutine execution error: %v\n", err)
+		}
+	}()
+
+	return nil, nil
 }
 
 func main() {
