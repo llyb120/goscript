@@ -18,11 +18,11 @@ func main() {
 
 语法对go进行兼容，支持go的绝大部分语法，但在此基础上进行精简，与go的差异如下
 
-- 不支持switch语句
+- ~~不支持switch语句~~
 - 不支持select语句
 - 不支持泛型
 - 不支持import语句
-- 不支持go func()
+- ~~不支持go func()~~
 - 不支持defer func()
 - 不支持定义struct
 - 不支持定义interface

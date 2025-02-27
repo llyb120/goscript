@@ -202,6 +202,8 @@ func (i *Interpreter) eval(node ast.Node) (any, error) {
 		return i.evalUnaryExpr(n)
 	case *ast.GoStmt:
 		return i.evalGoStmt(n)
+	case *ast.SwitchStmt:
+		return i.evalSwitchStmt(n)
 	default:
 		return nil, fmt.Errorf("unsupported node type: %T", node)
 	}
@@ -1417,6 +1419,61 @@ func (i *Interpreter) evalGoStmt(stmt *ast.GoStmt) (any, error) {
 	return nil, nil
 }
 
+// 处理 switch 语句
+func (i *Interpreter) evalSwitchStmt(stmt *ast.SwitchStmt) (any, error) {
+	// 如果有初始化语句，先执行
+	if stmt.Init != nil {
+		_, err := i.eval(stmt.Init)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	// 计算 switch 表达式的值
+	var tag any
+	var err error
+	if stmt.Tag != nil {
+		tag, err = i.eval(stmt.Tag)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	// 遍历所有的 case
+	for _, caseClause := range stmt.Body.List {
+		clause := caseClause.(*ast.CaseClause)
+
+		// default 子句
+		if clause.List == nil {
+			if len(stmt.Body.List) > 0 {
+				return i.evalBlockStmt(&ast.BlockStmt{List: clause.Body})
+			}
+			continue
+		}
+
+		// 检查每个 case 表达式
+		for _, expr := range clause.List {
+			caseVal, err := i.eval(expr)
+			if err != nil {
+				return nil, err
+			}
+
+			// 比较 case 值和 switch 表达式的值
+			equal, err := equal(tag, caseVal)
+			if err != nil {
+				return nil, err
+			}
+
+			// 如果匹配，执行对应的语句块
+			if equal {
+				return i.evalBlockStmt(&ast.BlockStmt{List: clause.Body})
+			}
+		}
+	}
+
+	return nil, nil
+}
+
 func main() {
 	interp := NewInterpreter()
 
@@ -1445,7 +1502,17 @@ func main() {
 
 	// 执行复杂逻辑
 	code := `
+	switch X {
+		case 1:
+			fmt.Println("go func")
+		case 222:
+			fmt.Println("bingo")
+	}
+
 	go func(){
+		defer func(){
+			fmt.Println("go func defer")
+		}()
 		fmt.Println("go func")
 	}()
 	a = a + 1
