@@ -200,8 +200,6 @@ func (i *Interpreter) eval(node ast.Node) (any, error) {
 		return i.evalRangeStmt(n)
 	case *ast.UnaryExpr:
 		return i.evalUnaryExpr(n)
-	case *ast.GoStmt:
-		return i.evalGoStmt(n)
 	case *ast.SwitchStmt:
 		return i.evalSwitchStmt(n)
 	default:
@@ -1403,22 +1401,6 @@ func (i *Interpreter) evalUnaryExpr(expr *ast.UnaryExpr) (any, error) {
 	}
 }
 
-// 处理 go 语句
-func (i *Interpreter) evalGoStmt(stmt *ast.GoStmt) (any, error) {
-	// 创建一个新的解释器实例用于 goroutine
-	newInterp := i.Fork()
-
-	go func() {
-		// 在新的 goroutine 中执行函数调用
-		_, err := newInterp.eval(stmt.Call)
-		if err != nil {
-			fmt.Printf("Goroutine execution error: %v\n", err)
-		}
-	}()
-
-	return nil, nil
-}
-
 // 处理 switch 语句
 func (i *Interpreter) evalSwitchStmt(stmt *ast.SwitchStmt) (any, error) {
 	// 如果有初始化语句，先执行
@@ -1502,17 +1484,7 @@ func main() {
 
 	// 执行复杂逻辑
 	code := `
-	switch X {
-		case 1:
-			fmt.Println("go func")
-		case 222:
-			fmt.Println("bingo")
-	}
-
 	go func(){
-		defer func(){
-			fmt.Println("go func defer")
-		}()
 		fmt.Println("go func")
 	}()
 	a = a + 1
