@@ -8,7 +8,6 @@ import (
 	"reflect"
 	"strconv"
 	"strings"
-	"sync"
 )
 
 // 因为类型是有限的，所以可以做一个全局的缓存
@@ -28,8 +27,7 @@ type Interpreter struct {
 	global      any
 	astCache    *astCache
 	isForked    bool
-	deferStack  []deferCall
-	wg          sync.WaitGroup
+	deferStack  []deferCall // 新增：存储延迟调用的栈
 }
 
 // 添加一个结构来存储延迟调用
@@ -57,7 +55,7 @@ func NewInterpreter() *Interpreter {
 		astCache: &astCache{
 			cache: make(map[string]*ast.File),
 		},
-		deferStack: make([]deferCall, 0),
+		deferStack: make([]deferCall, 0), // 初始化延迟调用栈
 	}
 
 	// 注册标准库包作为全局作用域中的对象
@@ -75,7 +73,7 @@ func (i *Interpreter) Fork() *Interpreter {
 		sharedScope: i.sharedScope,
 		astCache:    i.astCache,
 		isForked:    true,
-		deferStack:  make([]deferCall, 0),
+		deferStack:  make([]deferCall, 0), // 初始化延迟调用栈
 	}
 }
 
@@ -112,14 +110,28 @@ func (i *Interpreter) Interpret(code string) (any, error) {
 	if err != nil {
 		return nil, err
 	}
+	return i.eval(astFile.Decls[0].(*ast.FuncDecl).Body)
+	// 首先处理所有函数定义
+	// for _, decl := range f.Decls {
+	// 	if funcDecl, ok := decl.(*ast.FuncDecl); ok {
+	// 		if funcDecl.Name.Name != "__main__" {
+	// 			i.userFuncs[funcDecl.Name.Name] = &Function{
+	// 				params: funcDecl.Type.Params.List,
+	// 				body:   funcDecl.Body,
+	// 			}
+	// 		}
+	// 	}
+	// }
 
-	// 执行代码
-	result, err := i.eval(astFile.Decls[0].(*ast.FuncDecl).Body)
-
-	// 等待所有 goroutine 完成
-	i.wg.Wait()
-
-	return result, err
+	// // 查找并执行 __main__ 函数
+	// for _, decl := range f.Decls {
+	// 	if funcDecl, ok := decl.(*ast.FuncDecl); ok {
+	// 		if funcDecl.Name.Name == "__main__" {
+	// 			return i.eval(funcDecl.Body)
+	// 		}
+	// 	}
+	// }
+	// return nil, fmt.Errorf("没有找到 __main__ 函数")
 }
 
 func (i *Interpreter) eval(node ast.Node) (any, error) {
@@ -272,12 +284,34 @@ func (i *Interpreter) evalIdent(ident *ast.Ident) (any, error) {
 				if item, _ := globalReflectCache.get(g, ident.Name); item != nil {
 					return item, nil
 				}
+				// if field := v.FieldByName(ident.Name); field.IsValid() {
+				// 	// 检查字段是否可导出（首字母大写）
+				// 	if field.CanInterface() {
+				// 		return field.Interface(), nil
+				// 	}
+				// 	// 对于私有字段，返回错误
+				// 	return nil, fmt.Errorf("无法访问私有字段: %s", ident.Name)
+				// }
+				// // 尝试查找方法
+				// if method := v.MethodByName(ident.Name); method.IsValid() {
+				// 	if method.CanInterface() {
+				// 		return method.Interface(), nil
+				// 	}
+				// 	return nil, fmt.Errorf("无法访问私有方法: %s", ident.Name)
+				// }
+				// // 如果是指针，也查找指针的方法
+				// if v.CanAddr() {
+				// 	if method := v.Addr().MethodByName(ident.Name); method.IsValid() {
+				// 		return method.Interface(), nil
+				// 	}
+				// }
 			}
 		}
 	}
 
 	fmt.Println("warn: 未定义的标识符: ", ident.Name)
 	return Undefined, nil
+	// return nil, fmt.Errorf("未定义的标识符: %s", ident.Name)
 }
 
 // 处理代码块
@@ -653,6 +687,8 @@ func (i *Interpreter) evalCallExpr(call *ast.CallExpr) (any, error) {
 			return nil, nil
 		}
 		return results[0].Interface(), nil
+
+		// return nil, fmt.Errorf("不是可调用的函数: %T", fn)
 	}
 }
 
@@ -1454,13 +1490,7 @@ func (i *Interpreter) evalGoStmt(stmt *ast.GoStmt) (any, error) {
 	// 创建一个新的解释器实例用于 goroutine
 	newInterp := i.Fork()
 
-	// 增加 WaitGroup 计数
-	i.wg.Add(1)
-
 	go func() {
-		// 确保 WaitGroup 计数在 goroutine 结束时减少
-		defer i.wg.Done()
-
 		// 在新的 goroutine 中执行函数调用
 		_, err := newInterp.eval(stmt.Call)
 		if err != nil {
