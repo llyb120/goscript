@@ -1484,9 +1484,6 @@ func main() {
 
 	// 执行复杂逻辑
 	code := `
-	go func(){
-		fmt.Println("go func")
-	}()
 	a = a + 1
 	Foo()
 	print(X)
