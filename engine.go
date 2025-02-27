@@ -27,13 +27,6 @@ type Interpreter struct {
 	global      any
 	astCache    *astCache
 	isForked    bool
-	deferStack  []deferCall // 新增：存储延迟调用的栈
-}
-
-// 添加一个结构来存储延迟调用
-type deferCall struct {
-	fn   any
-	args []any
 }
 
 func NewInterpreterWithSharedScope(sharedScope map[string]any) *Interpreter {
@@ -55,7 +48,6 @@ func NewInterpreter() *Interpreter {
 		astCache: &astCache{
 			cache: make(map[string]*ast.File),
 		},
-		deferStack: make([]deferCall, 0), // 初始化延迟调用栈
 	}
 
 	// 注册标准库包作为全局作用域中的对象
@@ -73,7 +65,6 @@ func (i *Interpreter) Fork() *Interpreter {
 		sharedScope: i.sharedScope,
 		astCache:    i.astCache,
 		isForked:    true,
-		deferStack:  make([]deferCall, 0), // 初始化延迟调用栈
 	}
 }
 
@@ -213,8 +204,6 @@ func (i *Interpreter) eval(node ast.Node) (any, error) {
 		return i.evalGoStmt(n)
 	case *ast.SwitchStmt:
 		return i.evalSwitchStmt(n)
-	case *ast.DeferStmt:
-		return i.evalDeferStmt(n)
 	default:
 		return nil, fmt.Errorf("unsupported node type: %T", node)
 	}
@@ -321,77 +310,7 @@ func (i *Interpreter) evalBlockStmt(block *ast.BlockStmt) (any, error) {
 	i.scope = &Scope{
 		parent: prevScope,
 	}
-
-	// 保存当前的延迟调用栈长度
-	deferLen := len(i.deferStack)
-
-	// 确保作用域恢复和执行延迟调用
-	defer func() {
-		// 执行在此块中注册的所有延迟调用
-		for j := len(i.deferStack) - 1; j >= deferLen; j-- {
-			call := i.deferStack[j]
-
-			// 根据函数类型进行不同的处理
-			switch fn := call.fn.(type) {
-			case func(...any) (any, error):
-				// 闭包函数
-				_, _ = fn(call.args...)
-			case reflect.Value:
-				// 内置函数
-				reflectArgs := make([]reflect.Value, len(call.args))
-				for idx, arg := range call.args {
-					reflectArgs[idx] = reflect.ValueOf(arg)
-				}
-				_ = fn.Call(reflectArgs)
-			case *Function:
-				// 用户定义的函数
-				// 创建新的作用域
-				prevScope := i.scope
-				newScope := &Scope{
-					parent: prevScope,
-				}
-				i.scope = newScope
-				defer func() { i.scope = prevScope }()
-
-				// 绑定参数
-				for idx, param := range fn.params {
-					if idx < len(call.args) {
-						newScope.Store(param.Names[0].Name, call.args[idx])
-					}
-				}
-
-				// 执行函数体
-				_, _ = i.eval(fn.body)
-			default:
-				// 使用反射处理其他类型的函数
-				fnValue := reflect.ValueOf(fn)
-				if fnValue.Kind() == reflect.Func {
-					// 准备参数
-					fnType := fnValue.Type()
-					callArgs := make([]reflect.Value, len(call.args))
-					for i := 0; i < len(call.args); i++ {
-						if i < fnType.NumIn() {
-							arg := call.args[i]
-							if arg == nil {
-								callArgs[i] = reflect.Zero(fnType.In(i))
-							} else {
-								callArgs[i] = reflect.ValueOf(arg)
-							}
-						}
-					}
-
-					// 调用函数
-					_ = fnValue.Call(callArgs)
-				}
-			}
-		}
-
-		// 移除此块中注册的所有延迟调用
-		i.deferStack = i.deferStack[:deferLen]
-
-		// 恢复作用域
-		i.scope = prevScope
-	}()
+	defer func() { i.scope = prevScope }() // 确保作用域恢复
 
 	var result any
 	var err error
@@ -402,7 +321,6 @@ func (i *Interpreter) evalBlockStmt(block *ast.BlockStmt) (any, error) {
 			return nil, err
 		}
 	}
-
 	return result, nil
 }
 
@@ -1552,33 +1470,6 @@ func (i *Interpreter) evalSwitchStmt(stmt *ast.SwitchStmt) (any, error) {
 			}
 		}
 	}
-
-	return nil, nil
-}
-
-// 处理 defer 语句
-func (i *Interpreter) evalDeferStmt(stmt *ast.DeferStmt) (any, error) {
-	// 获取要延迟执行的函数
-	fn, err := i.eval(stmt.Call.Fun)
-	if err != nil {
-		return nil, err
-	}
-
-	// 评估所有参数
-	args := make([]any, len(stmt.Call.Args))
-	for idx, argExpr := range stmt.Call.Args {
-		argVal, err := i.eval(argExpr)
-		if err != nil {
-			return nil, err
-		}
-		args[idx] = argVal
-	}
-
-	// 将延迟调用添加到栈中
-	i.deferStack = append(i.deferStack, deferCall{
-		fn:   fn,
-		args: args,
-	})
 
 	return nil, nil
 }
