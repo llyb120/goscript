@@ -198,6 +198,8 @@ func (i *Interpreter) eval(node ast.Node) (any, error) {
 		return i.evalBranchStmt(n)
 	case *ast.RangeStmt:
 		return i.evalRangeStmt(n)
+	case *ast.UnaryExpr:
+		return i.evalUnaryExpr(n)
 	default:
 		return nil, fmt.Errorf("unsupported node type: %T", node)
 	}
@@ -1363,6 +1365,40 @@ func (i *Interpreter) evalRangeStmt(node *ast.RangeStmt) (any, error) {
 	return nil, nil
 }
 
+// 处理一元表达式
+func (i *Interpreter) evalUnaryExpr(expr *ast.UnaryExpr) (any, error) {
+	// 计算操作数
+	operand, err := i.eval(expr.X)
+	if err != nil {
+		return nil, err
+	}
+
+	switch expr.Op {
+	case token.NOT: // !
+		return !toBool(operand), nil
+	case token.SUB: // -
+		switch v := operand.(type) {
+		case int:
+			return -v, nil
+		case float64:
+			return -v, nil
+		default:
+			return nil, fmt.Errorf("一元减号操作不支持类型: %T", operand)
+		}
+	case token.ADD: // +
+		switch v := operand.(type) {
+		case int:
+			return v, nil
+		case float64:
+			return v, nil
+		default:
+			return nil, fmt.Errorf("一元加号操作不支持类型: %T", operand)
+		}
+	default:
+		return nil, fmt.Errorf("不支持的一元操作符: %v", expr.Op)
+	}
+}
+
 func main() {
 	interp := NewInterpreter()
 
@@ -1391,6 +1427,9 @@ func main() {
 
 	// 执行复杂逻辑
 	code := `
+	go func(){
+		fmt.Println("go func")
+	}()
 	a = a + 1
 	Foo()
 	print(X)
