@@ -45,11 +45,11 @@ fmt.Println(res)
 
 ```go
 // 绑定单一对象
-interp.BindObject("x", 1)
+interp.Set("x", 1)
 
 // 绑定global对象
 // 支持结构体和map
-interp.BindGlobalObject(map[string]any{
+interp.SetGlobal(map[string]any{
     "x": 1,
     "y": func(s string) {
         fmt.Printf("fomat by y   %v \n", s)

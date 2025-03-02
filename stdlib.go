@@ -7,17 +7,17 @@ import (
 )
 
 // 注册标准库包
-func (i *Interpreter) registerStandardPackages() {
+func (i *Interpreter) libs() {
 
 	// strings 包
-	i.sharedScope.Store("strings", map[string]any{
+	i.Set("strings", map[string]any{
 		"Builder": reflect.TypeOf(strings.Builder{}),
 		"Join":    strings.Join,
 		"Split":   strings.Split,
 	})
 
 	// fmt 包
-	i.sharedScope.Store("fmt", map[string]any{
+	i.Set("fmt", map[string]any{
 		"Println": fmt.Println,
 		"Printf":  fmt.Printf,
 		"Sprintf": fmt.Sprintf,

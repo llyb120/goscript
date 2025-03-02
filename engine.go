@@ -22,68 +22,72 @@ type Function struct {
 }
 
 type Interpreter struct {
-	sharedScope *SharedScope
-	scope       *Scope
-	global      any
-	astCache    *astCache
-	isForked    bool
+	// sharedScope *SharedScope
+	scope    *Scope
+	global   any
+	astCache *astCache
+	isForked bool
 }
 
-func NewInterpreterWithSharedScope(sharedScope map[string]any) *Interpreter {
-	interp := NewInterpreter()
-	for k, v := range sharedScope {
-		interp.sharedScope.Store(k, v)
-	}
-	return interp
-}
+// func NewInterpreterWithSharedScope(sharedScope map[string]any) *Interpreter {
+// 	interp := NewInterpreter()
+// 	for k, v := range sharedScope {
+// 		interp.sharedScope.Store(k, v)
+// 	}
+// 	return interp
+// }
 
 func NewInterpreter() *Interpreter {
-	globalScope := &Scope{}
 	interp := &Interpreter{
 		// sharedScope 只可读不可写
 		// 只在初始化的时候给一次写入的机会
-		sharedScope: &SharedScope{},
-		scope:       globalScope,
-		global:      globalScope,
+		// sharedScope: &SharedScope{},
+		scope:  &Scope{},
+		global: nil,
 		astCache: &astCache{
 			cache: make(map[string]*ast.File),
 		},
 	}
 
 	// 注册标准库包作为全局作用域中的对象
-	interp.registerStandardPackages()
+	interp.libs()
 
 	return interp
 }
 
 func (i *Interpreter) Fork() *Interpreter {
 	globalScope := &Scope{}
+	globalScope.parent = i.scope
 	return &Interpreter{
 		scope:  globalScope,
-		global: globalScope,
+		global: i.global,
 		// 共享
-		sharedScope: i.sharedScope,
-		astCache:    i.astCache,
-		isForked:    true,
+		astCache: i.astCache,
+		isForked: true,
 	}
 }
 
-func (i *Interpreter) BindFunction(name string, fn any) {
-	// 只有主进程可以绑定函数
-	if i.isForked {
-		return
+// func (i *Interpreter) BindFunction(name string, fn any) {
+// 	// 只有主进程可以绑定函数
+// 	if i.isForked {
+// 		return
+// 	}
+// 	if _, ok := i.sharedScope.Load(name); ok {
+// 		return
+// 	}
+// 	i.sharedScope.Store(name, reflect.ValueOf(fn))
+// }
+
+func (i *Interpreter) Set(name string, obj any) {
+	fnValue := reflect.ValueOf(obj)
+	if fnValue.Kind() != reflect.Func {
+		i.scope.Store(name, obj)
+	} else {
+		i.scope.Store(name, fnValue)
 	}
-	if _, ok := i.sharedScope.Load(name); ok {
-		return
-	}
-	i.sharedScope.Store(name, reflect.ValueOf(fn))
 }
 
-func (i *Interpreter) BindObject(name string, obj any) {
-	i.scope.Store(name, obj)
-}
-
-func (i *Interpreter) BindGlobalObject(obj any) {
+func (i *Interpreter) SetGlobal(obj any) {
 	i.global = obj
 }
 
@@ -248,11 +252,6 @@ func (i *Interpreter) evalIdent(ident *ast.Ident) (any, error) {
 			return val, nil
 		}
 		currentScope = currentScope.parent
-	}
-
-	// sharedScope 查找
-	if val, ok := i.sharedScope.Load(ident.Name); ok {
-		return val, nil
 	}
 
 	// 尝试从 __global__ 中获取
@@ -1460,7 +1459,7 @@ func main() {
 	interp := NewInterpreter()
 
 	// 注册内置函数
-	interp.BindFunction("print", func(s any) {
+	interp.Set("print", func(s any) {
 		fmt.Printf("%v \n", s)
 	})
 	// interp.BindGlobalObject(map[string]any{
@@ -1470,7 +1469,7 @@ func main() {
 	// 	},
 	// })
 
-	interp.BindGlobalObject(test{
+	interp.SetGlobal(test{
 		basetest: basetest{
 			X: 222,
 		},
