@@ -660,7 +660,12 @@ func (i *Interpreter) evalBinaryExpr(expr *ast.BinaryExpr) (any, error) {
 		return and(left, right)
 	case token.LOR:
 		return or(left, right)
-
+	case token.NEQ: // !=
+		equal, err := equal(left, right)
+		if err != nil {
+			return nil, err
+		}
+		return !equal, nil
 	default:
 		return nil, fmt.Errorf("不支持的运算符: %s", expr.Op)
 	}
@@ -1540,7 +1545,7 @@ for j < 5 {
 	}
 }
 for i := 1; i <= 5; i++ {
-	if i % 2 == 0 && 1 > 0 {
+	if i % 2 == 0 && 1 != 0 {
 		sum += i * 2
 		print(sum)
 	} else {
