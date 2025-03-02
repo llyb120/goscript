@@ -997,7 +997,7 @@ func (i *Interpreter) evalCompositeLit(lit *ast.CompositeLit) (any, error) {
 	switch t := lit.Type.(type) {
 	case *ast.MapType:
 		// 创建map
-		m := make(map[any]any)
+		m := make(map[string]any)
 
 		// 处理每个键值对
 		for _, elt := range lit.Elts {
@@ -1018,7 +1018,7 @@ func (i *Interpreter) evalCompositeLit(lit *ast.CompositeLit) (any, error) {
 				return nil, err
 			}
 
-			m[key] = val
+			m[key.(string)] = val
 		}
 		return m, nil
 
@@ -1462,6 +1462,9 @@ func main() {
 	interp.Set("print", func(s any) {
 		fmt.Printf("%v \n", s)
 	})
+	interp.Set("doTest", func(s map[string]any) {
+		fmt.Printf("doTest %v \n", s)
+	})
 	// interp.BindGlobalObject(map[string]any{
 	// 	"x": 1,
 	// 	"y": func(a string) {
@@ -1483,6 +1486,10 @@ func main() {
 
 	// 执行复杂逻辑
 	code := `
+	doTest(map[string]string{
+		"x": "foo",
+		"y": "bar",
+	})
 	a = a + 1
 	Foo()
 	print(X)
