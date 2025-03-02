@@ -676,6 +676,9 @@ func toBool(val any) bool {
 	if val == nil {
 		return false
 	}
+	if val == Undefined {
+		return false
+	}
 	switch v := val.(type) {
 	case bool:
 		return v
