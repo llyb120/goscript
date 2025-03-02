@@ -689,6 +689,9 @@ func toBool(val any) bool {
 	case string:
 		return v != ""
 	default:
+		if reflect.TypeOf(v).Kind() == reflect.Map || reflect.TypeOf(v).Kind() == reflect.Slice {
+			return reflect.ValueOf(v).Len() > 0
+		}
 		return true
 	}
 }
@@ -1494,6 +1497,15 @@ func main() {
 
 	// 执行复杂逻辑
 	code := `
+	mp := map[string]any{}
+	if mp {
+		print("mp is not nil")
+	}
+	mp["x"] = "foo"
+	mp["y"] = "bar"
+	if mp {
+		print("second mp is not nil")
+	}
 	doTest(map[string]string{
 		"x": "foo",
 		"y": "bar",
