@@ -41,6 +41,14 @@ func TestReflect(t *testing.T) {
 		fmt.Printf("方法 SetName 是指针接收器方法: %v\n", typ)
 		// 可以通过 method.Func.Call() 调用方法
 	}
+
+	func(pp any) {
+		cache.set(&pp, "Name", "李四的儿子")
+		fmt.Println(pp)
+	}(p)
+
+	// cache.set(&p, "Name", "李四的儿子")
+	// fmt.Println(p)
 }
 
 func TestReflectPtr(t *testing.T) {
@@ -65,4 +73,7 @@ func TestReflectPtr(t *testing.T) {
 		fmt.Printf("方法 SetName 是指针接收器方法: %v\n", typ)
 		// 可以通过 method.Func.Call() 调用方法
 	}
+
+	cache.set(p, "Name", "李四的儿子")
+	fmt.Println(p)
 }

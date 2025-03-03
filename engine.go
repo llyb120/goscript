@@ -88,7 +88,14 @@ func (i *Interpreter) Set(name string, obj any) {
 }
 
 func (i *Interpreter) SetGlobal(obj any) {
-	i.global = obj
+	refVal := reflect.ValueOf(obj)
+	if refVal.Kind() == reflect.Struct {
+		ptr := reflect.New(reflect.TypeOf(obj))
+		ptr.Elem().Set(refVal)
+		i.global = ptr.Interface()
+	} else {
+		i.global = obj
+	}
 }
 
 func (i *Interpreter) Interpret(code string) (any, error) {
@@ -478,7 +485,44 @@ func (i *Interpreter) evalAssignStmt(assign *ast.AssignStmt) (any, error) {
 				case map[string]any:
 					c[l.Sel.Name] = values[idx]
 				default:
-					return nil, fmt.Errorf("不支持的选择器赋值操作: %T", container)
+					// 使用反射缓存处理结构体字段赋值
+					if err := globalReflectCache.set(container, l.Sel.Name, values[idx]); err != nil {
+						return nil, err
+					}
+					// item := globalReflectCache.analyze(container)
+					// if fieldInfo, ok := item.fields[l.Sel.Name]; ok {
+					// 	v := reflect.ValueOf(container)
+					// 	var base unsafe.Pointer
+					// 	if v.Kind() == reflect.Ptr {
+					// 		base = unsafe.Pointer(v.Pointer())
+					// 	} else {
+					// 		// 如果不是指针，创建一个临时指针
+					// 		ptr := reflect.New(v.Type())
+					// 		ptr.Elem().Set(v)
+					// 		base = unsafe.Pointer(ptr.Pointer())
+					// 		// 注意：这种情况下修改不会影响原始值，因为我们修改的是副本
+					// 		// 可能需要返回错误或警告
+					// 		return nil, fmt.Errorf("无法修改非指针结构体的字段: %s", l.Sel.Name)
+					// 	}
+
+					// 	// 获取字段的指针
+					// 	ptr := unsafe.Pointer(uintptr(base) + fieldInfo.offset)
+					// 	field := reflect.NewAt(fieldInfo.typ, ptr).Elem()
+
+					// 	if !field.CanSet() {
+					// 		return nil, fmt.Errorf("结构体字段 %s 不可写入（可能是未导出字段）", l.Sel.Name)
+					// 	}
+
+					// 	// 尝试设置字段值
+					// 	fieldValue := reflect.ValueOf(values[idx])
+					// 	if fieldValue.Type().AssignableTo(field.Type()) {
+					// 		field.Set(fieldValue)
+					// 		return values, nil
+					// 	}
+
+					// 	return nil, fmt.Errorf("类型不匹配：无法将 %T 赋值给 %s", values[idx], field.Type())
+					// }
+					// return nil, fmt.Errorf("不支持的选择器赋值操作: %T 没有字段 %s", container, l.Sel.Name)
 				}
 			default:
 				return nil, fmt.Errorf("不支持的赋值目标类型: %T", l)
@@ -1497,6 +1541,9 @@ func main() {
 
 	// 执行复杂逻辑
 	code := `
+	print(G.X)
+	G.X = 3
+	print(G.X)
 	mp := map[string]any{}
 	if mp {
 		print("mp is not nil")

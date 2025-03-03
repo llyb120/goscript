@@ -1,6 +1,7 @@
 package goscript
 
 import (
+	"fmt"
 	"reflect"
 	"sync"
 	"unsafe"
@@ -14,8 +15,8 @@ type reflectCache struct {
 }
 
 type fieldInfo struct {
-	offset uintptr
-	typ    reflect.Type
+	index []int // 字段的索引路径
+	typ   reflect.Type
 }
 
 type methodInfo struct {
@@ -38,8 +39,18 @@ func NewReflectCache() *reflectCache {
 
 func (r *reflectCache) analyze(val any) *reflectCacheItem {
 	t := reflect.TypeOf(val)
+
+	// 先检查是否是接口类型
 	if t.Kind() == reflect.Ptr {
 		t = t.Elem()
+	}
+
+	if t.Kind() == reflect.Interface {
+		// 获取接口中实际的值的类型
+		iface := (*[2]unsafe.Pointer)(unsafe.Pointer(&val))
+		if iface[1] != nil {
+			t = reflect.TypeOf(*(*interface{})(iface[1]))
+		}
 	}
 
 	// 尝试读取缓存
@@ -90,52 +101,59 @@ func (r *reflectCache) getOrCreateCacheItem(t reflect.Type) *reflectCacheItem {
 
 // 缓存字段
 func (r *reflectCache) cacheFields(item *reflectCacheItem, t reflect.Type) {
-	for i := 0; i < t.NumField(); i++ {
-		field := t.Field(i)
-		// 对于内嵌字段，不需要检查是否导出
-		if field.IsExported() || field.Anonymous {
-			// 计算真实的内存偏移量
-			fieldOffset := field.Offset
+	var cacheField func(reflect.Type, []int)
 
-			item.fields[field.Name] = fieldInfo{
-				offset: fieldOffset,
-				typ:    field.Type,
-			}
+	cacheField = func(t reflect.Type, parentIndex []int) {
+		for i := 0; i < t.NumField(); i++ {
+			field := t.Field(i)
+			index := append(append([]int{}, parentIndex...), i)
 
-			// 处理嵌入字段
-			if field.Anonymous {
-				fieldType := field.Type
-				if fieldType.Kind() == reflect.Ptr {
-					fieldType = fieldType.Elem()
+			if field.IsExported() || field.Anonymous {
+				item.fields[field.Name] = fieldInfo{
+					index: index,
+					typ:   field.Type,
 				}
-				if fieldType.Kind() == reflect.Struct {
-					item.embeddedTypes = append(item.embeddedTypes, fieldType)
 
-					// 递归处理嵌入字段的字段和方法
-					embeddedItem := r.getOrCreateCacheItem(fieldType)
+				// 处理嵌入字段
+				if field.Anonymous {
+					fieldType := field.Type
+					if fieldType.Kind() == reflect.Ptr {
+						fieldType = fieldType.Elem()
+					}
+					if fieldType.Kind() == reflect.Struct {
+						item.embeddedTypes = append(item.embeddedTypes, fieldType)
 
-					// 缓存嵌入字段的字段，并调整偏移量
-					for name, info := range embeddedItem.fields {
-						if _, exists := item.fields[name]; !exists {
-							// 计算真实的内存偏移量：基础偏移量 + 嵌入字段内的偏移量
-							realOffset := fieldOffset + info.offset
-							item.fields[name] = fieldInfo{
-								offset: realOffset,
-								typ:    info.typ,
+						// 递归处理嵌入字段
+						embeddedItem := r.getOrCreateCacheItem(fieldType)
+
+						// 缓存嵌入字段的字段
+						for name, info := range embeddedItem.fields {
+							if _, exists := item.fields[name]; !exists {
+								// 计算完整的索引路径
+								fullIndex := append(append([]int{}, index...), info.index...)
+								item.fields[name] = fieldInfo{
+									index: fullIndex,
+									typ:   info.typ,
+								}
 							}
 						}
-					}
 
-					// 缓存嵌入字段的方法
-					for methodName, methodInfo := range embeddedItem.methods {
-						if _, exists := item.methods[methodName]; !exists {
-							item.methods[methodName] = methodInfo
+						// 缓存嵌入字段的方法
+						for methodName, methodInfo := range embeddedItem.methods {
+							if _, exists := item.methods[methodName]; !exists {
+								item.methods[methodName] = methodInfo
+							}
 						}
+
+						// 递归处理嵌入字段的结构
+						cacheField(fieldType, index)
 					}
 				}
 			}
 		}
 	}
+
+	cacheField(t, nil)
 }
 
 // 缓存方法
@@ -175,17 +193,10 @@ func (r *reflectCache) getValue(item *reflectCacheItem, obj any, fieldName strin
 	}
 	if field, ok := item.fields[fieldName]; ok {
 		v := reflect.ValueOf(obj)
-		var base unsafe.Pointer
 		if v.Kind() == reflect.Ptr {
-			base = unsafe.Pointer(v.Pointer())
-		} else {
-			ptr := reflect.New(v.Type())
-			ptr.Elem().Set(v)
-			base = unsafe.Pointer(ptr.Pointer())
+			v = v.Elem()
 		}
-
-		ptr := unsafe.Pointer(uintptr(base) + field.offset)
-		return reflect.NewAt(field.typ, ptr).Elem().Interface(), field.typ
+		return v.FieldByIndex(field.index).Interface(), field.typ
 	}
 	return nil, nil
 }
@@ -228,4 +239,87 @@ func (r *reflectCache) get(obj any, name string) (any, reflect.Type) {
 		return method, typ
 	}
 	return nil, nil
+}
+
+// set 设置对象的字段值，支持指针类型
+func (r *reflectCache) set(obj any, fieldName string, value any) error {
+	item := r.analyze(obj)
+	if item == nil {
+		return fmt.Errorf("failed to analyze object")
+	}
+
+	field, ok := item.fields[fieldName]
+	if !ok {
+		return fmt.Errorf("field %s not found", fieldName)
+	}
+
+	valueToSet := reflect.ValueOf(value)
+	if !valueToSet.Type().AssignableTo(field.typ) {
+		return fmt.Errorf("cannot assign value of type %s to field of type %s", valueToSet.Type(), field.typ)
+	}
+
+	v := reflect.ValueOf(obj)
+	if v.Kind() != reflect.Ptr {
+		return fmt.Errorf("cannot set field on non-pointer value")
+	}
+
+	// 处理 *interface{} 的情况
+	if v.Type().Elem().Kind() == reflect.Interface {
+		elem := v.Elem()
+		if elem.IsNil() {
+			return fmt.Errorf("interface value is nil")
+		}
+		// 获取接口中的实际值
+		actualValue := elem.Elem()
+
+		// 创建可设置的副本
+		copyValue := reflect.New(actualValue.Type()).Elem()
+		copyValue.Set(actualValue)
+
+		// 获取字段值
+		fieldValue := copyValue.FieldByIndex(field.index)
+		if !fieldValue.CanSet() {
+			// 尝试通过指针访问
+			if copyValue.CanAddr() {
+				fieldValue = reflect.NewAt(copyValue.Type(), unsafe.Pointer(copyValue.UnsafeAddr())).Elem().FieldByIndex(field.index)
+			}
+		}
+
+		if !fieldValue.CanSet() {
+			return fmt.Errorf("cannot set field %s: field is not settable", fieldName)
+		}
+
+		// 类型转换处理
+		convertedValue, err := convertType(reflect.ValueOf(value), fieldValue.Type())
+		if err != nil {
+			return err
+		}
+
+		fieldValue.Set(convertedValue)
+		elem.Set(copyValue)
+		return nil
+	} else {
+		v = v.Elem()
+	}
+	fieldValue := v.FieldByIndex(field.index)
+	if !fieldValue.CanSet() {
+		return fmt.Errorf("cannot set field %s: field is not settable", fieldName)
+	}
+
+	fieldValue.Set(valueToSet)
+	return nil
+}
+
+// 新增类型转换函数
+func convertType(src reflect.Value, dstType reflect.Type) (reflect.Value, error) {
+	if src.Type().ConvertibleTo(dstType) {
+		return src.Convert(dstType), nil
+	}
+	if src.Kind() == reflect.Interface {
+		src = src.Elem()
+	}
+	if src.Type().ConvertibleTo(dstType) {
+		return src.Convert(dstType), nil
+	}
+	return reflect.Value{}, fmt.Errorf("cannot convert %s to %s", src.Type(), dstType)
 }
