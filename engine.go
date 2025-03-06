@@ -98,6 +98,10 @@ func (i *Interpreter) SetGlobal(obj any) {
 	}
 }
 
+func (i *Interpreter) GetGlobal() any {
+	return i.global
+}
+
 func (i *Interpreter) Interpret(code string) (any, error) {
 	fset := token.NewFileSet()
 	code = `package main
