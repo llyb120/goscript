@@ -24,3 +24,10 @@ type test struct {
 func (t test) Bar() {
 	fmt.Printf("Bar %v \n", t.X)
 }
+
+func (t test) TestArgs(a string, b ...string) {
+	fmt.Printf("Bar2 %v \n", a)
+	for _, v := range b {
+		fmt.Printf("Bar2 %v \n", v)
+	}
+}

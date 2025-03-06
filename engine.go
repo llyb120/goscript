@@ -626,17 +626,36 @@ func (i *Interpreter) evalCallExpr(call *ast.CallExpr) (any, error) {
 
 		// 准备参数
 		fnType := fnValue.Type()
-		if fnType.NumIn() != len(args) {
+		if fnType.IsVariadic() {
+			// 处理可变参数函数
+			if len(args) < fnType.NumIn()-1 {
+				return nil, fmt.Errorf("参数数量不足: 至少需要 %d 个参数, 得到 %d 个", fnType.NumIn()-1, len(args))
+			}
+		} else if fnType.NumIn() != len(args) {
 			return nil, fmt.Errorf("参数数量不匹配: 期望 %d, 得到 %d", fnType.NumIn(), len(args))
 		}
 
 		callArgs := make([]reflect.Value, len(args))
 		for i := 0; i < len(args); i++ {
 			arg := args[i]
-			if arg == nil {
-				callArgs[i] = reflect.Zero(fnType.In(i))
+			var paramType reflect.Type
+			if fnType.IsVariadic() && i >= fnType.NumIn()-1 {
+				// 对于可变参数部分，使用可变参数的类型
+				paramType = fnType.In(fnType.NumIn() - 1).Elem()
 			} else {
-				callArgs[i] = reflect.ValueOf(arg)
+				paramType = fnType.In(i)
+			}
+
+			if arg == nil {
+				callArgs[i] = reflect.Zero(paramType)
+			} else {
+				argValue := reflect.ValueOf(arg)
+				// 如果需要类型转换且可以转换，则进行转换
+				if argValue.Type().ConvertibleTo(paramType) {
+					callArgs[i] = argValue.Convert(paramType)
+				} else {
+					callArgs[i] = argValue
+				}
 			}
 		}
 
@@ -1520,6 +1539,9 @@ func main() {
 	interp.Set("doTest", func(s map[string]any) {
 		fmt.Printf("doTest %v \n", s)
 	})
+	interp.Set("doTest2", func(s ...string) {
+		fmt.Printf("doTest2 %v \n", s)
+	})
 	// interp.BindGlobalObject(map[string]any{
 	// 	"x": 1,
 	// 	"y": func(a string) {
@@ -1541,6 +1563,8 @@ func main() {
 
 	// 执行复杂逻辑
 	code := `
+	TestArgs("foo", "bar", "baz")
+	doTest2("foo", "bar")
 	print(G.X)
 	G.X = 3
 	print(G.X)
