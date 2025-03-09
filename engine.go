@@ -588,9 +588,16 @@ func (i *Interpreter) evalCallExpr(call *ast.CallExpr) (any, error) {
 	case reflect.Value:
 		// 内置函数
 		reflectArgs := make([]reflect.Value, len(args))
+		fnType := fn.Type()
 		for idx, arg := range args {
 			if arg == nil {
-				reflectArgs[idx] = reflect.Zero(reflect.TypeOf(arg))
+				var paramType reflect.Type
+				if fnType.IsVariadic() && idx >= fnType.NumIn()-1 {
+					paramType = fnType.In(fnType.NumIn() - 1).Elem()
+				} else {
+					paramType = fnType.In(idx)
+				}
+				reflectArgs[idx] = reflect.Zero(paramType)
 			} else {
 				reflectArgs[idx] = reflect.ValueOf(arg)
 			}
