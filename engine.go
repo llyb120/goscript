@@ -589,7 +589,11 @@ func (i *Interpreter) evalCallExpr(call *ast.CallExpr) (any, error) {
 		// 内置函数
 		reflectArgs := make([]reflect.Value, len(args))
 		for idx, arg := range args {
-			reflectArgs[idx] = reflect.ValueOf(arg)
+			if arg == nil {
+				reflectArgs[idx] = reflect.Zero(reflect.TypeOf(arg))
+			} else {
+				reflectArgs[idx] = reflect.ValueOf(arg)
+			}
 		}
 		results := fn.Call(reflectArgs)
 		if len(results) == 0 {
