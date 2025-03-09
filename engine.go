@@ -13,9 +13,6 @@ import (
 // 因为类型是有限的，所以可以做一个全局的缓存
 var globalReflectCache = NewReflectCache()
 
-// 类型安全的undefined
-var Undefined = &struct{}{}
-
 type Function struct {
 	params []*ast.Field
 	body   *ast.BlockStmt
@@ -307,7 +304,7 @@ func (i *Interpreter) evalIdent(ident *ast.Ident) (any, error) {
 	}
 
 	fmt.Println("warn: 未定义的标识符: ", ident.Name)
-	return Undefined, nil
+	return nil, nil
 	// return nil, fmt.Errorf("未定义的标识符: %s", ident.Name)
 }
 
@@ -625,7 +622,9 @@ func (i *Interpreter) evalCallExpr(call *ast.CallExpr) (any, error) {
 		// 使用反射处理其他类型的函数
 		fnValue := reflect.ValueOf(fn)
 		if fnValue.Kind() != reflect.Func {
-			return nil, fmt.Errorf("不是可调用的函数: %T", fn)
+			fmt.Printf("warn: 不是可调用的函数: %T \n", fn)
+			return nil, nil
+			//return nil, fmt.Errorf("不是可调用的函数: %T", fn)
 		}
 
 		// 准备参数
@@ -743,9 +742,6 @@ func toBool(val any) bool {
 	if val == nil {
 		return false
 	}
-	if val == Undefined {
-		return false
-	}
 	switch v := val.(type) {
 	case bool:
 		return v
@@ -765,10 +761,10 @@ func toBool(val any) bool {
 
 // 算术运算实现
 func add(a, b any) (any, error) {
-	if a == Undefined {
+	if a == nil {
 		a = ""
 	}
-	if b == Undefined {
+	if b == nil {
 		b = ""
 	}
 	switch a := a.(type) {
@@ -1199,9 +1195,9 @@ func (i *Interpreter) evalSelectorExpr(sel *ast.SelectorExpr) (any, error) {
 		return nil, err
 	}
 
-	if container == Undefined {
+	if container == nil {
 		fmt.Printf("warn: 选择器表达式对象为undefined: %v.%s \n", sel.X, sel.Sel.Name)
-		return Undefined, nil
+		return nil, nil
 	}
 
 	// 获取选择器名称
@@ -1567,6 +1563,7 @@ func main() {
 
 	// 执行复杂逻辑
 	code := `
+	no()
 	TestArgs("foo", "bar", "baz")
 	doTest2("foo", "bar")
 	print(G.X)
