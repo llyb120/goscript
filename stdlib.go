@@ -22,4 +22,8 @@ func (i *Interpreter) libs() {
 		"Printf":  fmt.Printf,
 		"Sprintf": fmt.Sprintf,
 	})
+
+	i.Set("len", func(v any) int {
+		return reflect.ValueOf(v).Len()
+	})
 }
