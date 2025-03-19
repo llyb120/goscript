@@ -274,6 +274,11 @@ func (i *Interpreter) evalIdent(ident *ast.Ident) (any, error) {
 			if v.Kind() == reflect.Ptr {
 				v = v.Elem()
 			}
+			// 如果是map
+			// if v.Kind() == reflect.Map {
+			// 	return v.MapIndex(reflect.ValueOf(ident.Name)).Interface(), nil
+			// }
+			// 如果是slice
 			if v.Kind() == reflect.Struct {
 				if item, _ := globalReflectCache.get(g, ident.Name); item != nil {
 					return item, nil
@@ -1224,10 +1229,24 @@ func (i *Interpreter) evalSelectorExpr(sel *ast.SelectorExpr) (any, error) {
 		if val, ok := c[fieldName]; ok {
 			return val, nil
 		}
+	case map[string]string:
+		if val, ok := c[fieldName]; ok {
+			return val, nil
+		}
 	default:
 		// 处理结构体和指针类型
 		if item, _ := globalReflectCache.get(container, fieldName); item != nil {
 			return item, nil
+		}
+
+		// 如果是map类型
+		if reflect.TypeOf(container).Kind() == reflect.Map {
+			// 使用map返回
+			mapValue := reflect.ValueOf(container)
+			keyValue := reflect.ValueOf(fieldName)
+			if val := mapValue.MapIndex(keyValue); val.IsValid() {
+				return val.Interface(), nil
+			}
 		}
 	}
 
@@ -1570,6 +1589,16 @@ func main() {
 		Y: func(s string) {
 			fmt.Printf("fomat by y   %v \n", s)
 		},
+		TestMp: []map[string]string{
+			{
+				"x": "foo",
+				"y": "bar",
+			},
+			{
+				"x": "foo2",
+				"y": "bar2",
+			},
+		},
 	})
 
 	// 执行复杂逻辑
@@ -1584,11 +1613,26 @@ func main() {
 	if mp {
 		print("mp is not nil")
 	}
+
 	mp["x"] = "foo"
 	mp["y"] = "bar"
 	if mp {
 		print("second mp is not nil")
 	}
+	print("测试string string map")
+	mp2 := map[string]string{}
+	mp2.x = "foo"
+	mp2.y = "bar"
+	print(mp2.x)
+	print(mp2.y)
+
+	print("测试[]map[string]string")
+	for _, mp := range TestMp {
+		print(mp.x)
+		print(mp.y)
+	}
+	print("end")
+
 	doTest(map[string]string{
 		"x": "foo",
 		"y": "bar",

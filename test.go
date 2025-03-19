@@ -18,7 +18,8 @@ type test struct {
 	basetest
 	nnn int
 	basetest2
-	Y func(string)
+	Y      func(string)
+	TestMp []map[string]string
 }
 
 func (t test) Bar() {
