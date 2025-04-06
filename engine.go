@@ -1603,6 +1603,11 @@ func main() {
 
 	// 执行复杂逻辑
 	code := `
+	var abc = []any{1, 2, 3, 4, 5}
+	for i, v := range abc {
+		print(i + " " + v)
+	}
+	print(len(abc))
 	no()
 	TestArgs("foo", "bar", "baz")
 	doTest2("foo", "bar")

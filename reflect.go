@@ -158,7 +158,21 @@ func (r *reflectCache) cacheFields(item *reflectCacheItem, t reflect.Type) {
 
 // 缓存方法
 func (r *reflectCache) cacheMethods(item *reflectCacheItem, t reflect.Type) {
-	// 缓存值接收器的方法
+	// 先获取嵌入结构体的方法
+	for _, embedded := range item.embeddedTypes {
+		// 获取嵌入类型的缓存项
+		embeddedItem := r.getOrCreateCacheItem(embedded)
+
+		// 缓存嵌入类型的方法
+		for methodName, methodInfo := range embeddedItem.methods {
+			// 只有当方法不存在时才添加嵌入类型的方法
+			if _, exists := item.methods[methodName]; !exists {
+				item.methods[methodName] = methodInfo
+			}
+		}
+	}
+
+	// 缓存值接收器的方法（这些方法会覆盖嵌入类型的方法）
 	for i := 0; i < t.NumMethod(); i++ {
 		method := t.Method(i)
 		if method.IsExported() {
@@ -170,17 +184,15 @@ func (r *reflectCache) cacheMethods(item *reflectCacheItem, t reflect.Type) {
 		}
 	}
 
-	// 缓存指针接收器的方法
+	// 缓存指针接收器的方法（这些方法会覆盖值接收器和嵌入类型的方法）
 	ptrType := reflect.PtrTo(t)
 	for i := 0; i < ptrType.NumMethod(); i++ {
 		method := ptrType.Method(i)
 		if method.IsExported() {
-			if _, exists := item.methods[method.Name]; !exists {
-				item.methods[method.Name] = methodInfo{
-					method:  method,
-					pointer: true,
-					offset:  i,
-				}
+			item.methods[method.Name] = methodInfo{
+				method:  method,
+				pointer: true,
+				offset:  i,
 			}
 		}
 	}
@@ -209,18 +221,24 @@ func (r *reflectCache) getMethod(item *reflectCacheItem, obj any, methodName str
 
 	if method, ok := item.methods[methodName]; ok {
 		v := reflect.ValueOf(obj)
+
+		// 处理接收器类型不匹配的情况
 		if method.pointer {
+			// 需要指针接收器
 			if v.Kind() != reflect.Ptr {
+				// 如果当前值不是指针，创建新的指针
 				newPtr := reflect.New(v.Type())
 				newPtr.Elem().Set(v)
 				v = newPtr
 			}
 		} else {
+			// 需要值接收器
 			if v.Kind() == reflect.Ptr {
 				v = v.Elem()
 			}
 		}
 
+		// 使用偏移量获取方法
 		m := v.Method(method.offset)
 		return m.Interface(), method.method.Type
 	}
