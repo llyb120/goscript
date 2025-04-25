@@ -108,46 +108,45 @@ func (r *reflectCache) cacheFields(item *reflectCacheItem, t reflect.Type) {
 			field := t.Field(i)
 			index := append(append([]int{}, parentIndex...), i)
 
-			if field.IsExported() || field.Anonymous {
-				item.fields[field.Name] = fieldInfo{
-					index: index,
-					typ:   field.Type,
+			// 删除导出检查，支持所有字段
+			item.fields[field.Name] = fieldInfo{
+				index: index,
+				typ:   field.Type,
+			}
+
+			// 处理嵌入字段
+			if field.Anonymous {
+				fieldType := field.Type
+				if fieldType.Kind() == reflect.Ptr {
+					fieldType = fieldType.Elem()
 				}
+				if fieldType.Kind() == reflect.Struct {
+					item.embeddedTypes = append(item.embeddedTypes, fieldType)
 
-				// 处理嵌入字段
-				if field.Anonymous {
-					fieldType := field.Type
-					if fieldType.Kind() == reflect.Ptr {
-						fieldType = fieldType.Elem()
-					}
-					if fieldType.Kind() == reflect.Struct {
-						item.embeddedTypes = append(item.embeddedTypes, fieldType)
+					// 递归处理嵌入字段
+					embeddedItem := r.getOrCreateCacheItem(fieldType)
 
-						// 递归处理嵌入字段
-						embeddedItem := r.getOrCreateCacheItem(fieldType)
-
-						// 缓存嵌入字段的字段
-						for name, info := range embeddedItem.fields {
-							if _, exists := item.fields[name]; !exists {
-								// 计算完整的索引路径
-								fullIndex := append(append([]int{}, index...), info.index...)
-								item.fields[name] = fieldInfo{
-									index: fullIndex,
-									typ:   info.typ,
-								}
+					// 缓存嵌入字段的字段
+					for name, info := range embeddedItem.fields {
+						if _, exists := item.fields[name]; !exists {
+							// 计算完整的索引路径
+							fullIndex := append(append([]int{}, index...), info.index...)
+							item.fields[name] = fieldInfo{
+								index: fullIndex,
+								typ:   info.typ,
 							}
 						}
-
-						// 缓存嵌入字段的方法
-						for methodName, methodInfo := range embeddedItem.methods {
-							if _, exists := item.methods[methodName]; !exists {
-								item.methods[methodName] = methodInfo
-							}
-						}
-
-						// 递归处理嵌入字段的结构
-						cacheField(fieldType, index)
 					}
+
+					// 缓存嵌入字段的方法
+					for methodName, methodInfo := range embeddedItem.methods {
+						if _, exists := item.methods[methodName]; !exists {
+							item.methods[methodName] = methodInfo
+						}
+					}
+
+					// 递归处理嵌入字段的结构
+					cacheField(fieldType, index)
 				}
 			}
 		}
@@ -198,7 +197,7 @@ func (r *reflectCache) cacheMethods(item *reflectCacheItem, t reflect.Type) {
 	}
 }
 
-// 获取字段值
+// 获取字段值，支持未导出字段
 func (r *reflectCache) getValue(item *reflectCacheItem, obj any, fieldName string) (any, reflect.Type) {
 	if item == nil {
 		item = r.analyze(obj)
@@ -208,7 +207,20 @@ func (r *reflectCache) getValue(item *reflectCacheItem, obj any, fieldName strin
 		if v.Kind() == reflect.Ptr {
 			v = v.Elem()
 		}
-		return v.FieldByIndex(field.index).Interface(), field.typ
+		// 从对象中获取字段值
+		fieldValue := v.FieldByIndex(field.index)
+
+		// 对于未导出字段，不能直接调用Interface()，需要使用unsafe
+		if !fieldValue.CanInterface() {
+			// 获取字段的实际数据指针
+			ptr := unsafe.Pointer(fieldValue.UnsafeAddr())
+			// 创建一个新的可反射值，它具有相同的类型但可以被访问
+			newValue := reflect.NewAt(fieldValue.Type(), ptr).Elem()
+			return newValue.Interface(), field.typ
+		}
+
+		// 对于导出字段，正常获取
+		return fieldValue.Interface(), field.typ
 	}
 	return nil, nil
 }
@@ -259,7 +271,7 @@ func (r *reflectCache) get(obj any, name string) (any, reflect.Type) {
 	return nil, nil
 }
 
-// set 设置对象的字段值，支持指针类型
+// set 设置对象的字段值，支持指针类型，现在也支持未导出字段
 func (r *reflectCache) set(obj any, fieldName string, value any) error {
 	item := r.analyze(obj)
 	if item == nil {
@@ -296,32 +308,31 @@ func (r *reflectCache) set(obj any, fieldName string, value any) error {
 
 		// 获取字段值
 		fieldValue := copyValue.FieldByIndex(field.index)
-		if !fieldValue.CanSet() {
-			// 尝试通过指针访问
-			if copyValue.CanAddr() {
-				fieldValue = reflect.NewAt(copyValue.Type(), unsafe.Pointer(copyValue.UnsafeAddr())).Elem().FieldByIndex(field.index)
-			}
-		}
 
-		if !fieldValue.CanSet() {
-			return fmt.Errorf("cannot set field %s: field is not settable", fieldName)
-		}
-
-		// 类型转换处理
+		// 使用unsafe设置字段值，无论是否导出
 		convertedValue, err := convertType(reflect.ValueOf(value), fieldValue.Type())
 		if err != nil {
 			return err
 		}
 
-		fieldValue.Set(convertedValue)
+		// 使用unsafe包来设置字段，绕过Go的导出限制
+		rf := reflect.NewAt(fieldValue.Type(), unsafe.Pointer(fieldValue.UnsafeAddr())).Elem()
+		rf.Set(convertedValue)
+
 		elem.Set(copyValue)
 		return nil
 	} else {
 		v = v.Elem()
 	}
+
 	fieldValue := v.FieldByIndex(field.index)
+
+	// 使用unsafe设置字段值，无论是否导出
 	if !fieldValue.CanSet() {
-		return fmt.Errorf("cannot set field %s: field is not settable", fieldName)
+		// 使用unsafe包来设置字段，绕过Go的导出限制
+		rf := reflect.NewAt(fieldValue.Type(), unsafe.Pointer(fieldValue.UnsafeAddr())).Elem()
+		rf.Set(valueToSet)
+		return nil
 	}
 
 	fieldValue.Set(valueToSet)

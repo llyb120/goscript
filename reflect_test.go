@@ -9,6 +9,7 @@ type Person struct {
 	Name  string
 	Age   int
 	Name2 *string
+	test  int
 }
 
 func (p Person) GetName() string {
@@ -17,6 +18,11 @@ func (p Person) GetName() string {
 
 func (p *Person) SetName(name string) {
 	p.Name = name
+}
+
+func (p *Person) doTest() int {
+	fmt.Println("doTest success")
+	return 1
 }
 
 func TestReflect(t *testing.T) {
@@ -42,6 +48,11 @@ func TestReflect(t *testing.T) {
 		// 可以通过 method.Func.Call() 调用方法
 	}
 
+	if method, typ := cache.get(p, "doTest"); method != nil {
+		fmt.Println(method)
+		fmt.Printf("方法 doTest 是指针接收器方法: %v\n", typ)
+	}
+
 	func(pp any) {
 		cache.set(&pp, "Name", "李四的儿子")
 		fmt.Println(pp)
@@ -54,7 +65,11 @@ func TestReflect(t *testing.T) {
 func TestReflectPtr(t *testing.T) {
 	cache := NewReflectCache()
 	name := "李四"
-	p := &Person{Name: "张三", Age: 18, Name2: &name}
+	p := &Person{Name: "张三", Age: 18, Name2: &name, test: 1}
+
+	if item, _ := cache.get(p, "test"); item != nil {
+		fmt.Println(item)
+	}
 
 	// 获取字段
 	if item, _ := cache.get(p, "Name"); item != nil {
