@@ -1199,6 +1199,25 @@ func (i *Interpreter) evalIndexExpr(expr *ast.IndexExpr) (any, error) {
 		}
 
 	default:
+		// 反射
+		switch reflect.TypeOf(container).Kind() {
+		case reflect.Map:
+			// 使用map返回
+			mapValue := reflect.ValueOf(container)
+			keyValue := reflect.ValueOf(index)
+			if val := mapValue.MapIndex(keyValue); val.IsValid() {
+				return val.Interface(), nil
+			}
+		case reflect.Slice, reflect.Array:
+			// 使用slice返回
+			sliceValue := reflect.ValueOf(container)
+			if idx, ok := index.(int); ok {
+				if idx < 0 || idx >= sliceValue.Len() {
+					return nil, fmt.Errorf("索引越界: %d", idx)
+				}
+				return sliceValue.Index(idx).Interface(), nil
+			}
+		}
 		return nil, fmt.Errorf("不支持的索引操作: %T", container)
 	}
 }
