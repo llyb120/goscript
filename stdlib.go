@@ -31,11 +31,12 @@ func (i *Interpreter) libs() {
 	// 对于数组和slice：检查是否包含指定的值
 	// 对于map：检查是否包含指定的key
 	// 对于结构体：使用reflect缓存检查是否包含指定的字段
-	i.Set("has", func(container any, element any) bool {
+	i.Set("has", func(container any, element ...any) bool {
 		if container == nil {
 			return false
 		}
 
+		var flag = true
 		containerVal := reflect.ValueOf(container)
 		containerType := containerVal.Type()
 
@@ -48,53 +49,67 @@ func (i *Interpreter) libs() {
 			containerType = containerVal.Type()
 		}
 
-		switch containerType.Kind() {
-		case reflect.Slice, reflect.Array:
-			// 对于数组和slice，检查是否包含指定的值
-			for i := 0; i < containerVal.Len(); i++ {
-				item := containerVal.Index(i)
-				if reflect.DeepEqual(item.Interface(), element) {
-					return true
-				}
-			}
-			return false
+		for _, elem := range element {
+			elem := elem
+			flag = flag && func() bool {
+				switch containerType.Kind() {
+				case reflect.Slice, reflect.Array:
+					// 对于数组和slice，检查是否包含指定的值
+					for i := 0; i < containerVal.Len(); i++ {
+						item := containerVal.Index(i)
+						if reflect.DeepEqual(item.Interface(), elem) {
+							return true
+						}
+					}
+					return false
 
-		case reflect.Map:
-			// 对于map，检查是否包含指定的key
-			keyVal := reflect.ValueOf(element)
-			mapKeyType := containerVal.Type().Key()
+				case reflect.Map:
+					// 对于map，检查是否包含指定的key
+					keyVal := reflect.ValueOf(elem)
+					mapKeyType := containerVal.Type().Key()
 
-			// 检查key类型是否兼容
-			if !keyVal.Type().AssignableTo(mapKeyType) {
-				// 尝试类型转换
-				if keyVal.Type().ConvertibleTo(mapKeyType) {
-					keyVal = keyVal.Convert(mapKeyType)
-				} else {
+					// 检查key类型是否兼容
+					if !keyVal.Type().AssignableTo(mapKeyType) {
+						// 尝试类型转换
+						if keyVal.Type().ConvertibleTo(mapKeyType) {
+							keyVal = keyVal.Convert(mapKeyType)
+						} else {
+							return false
+						}
+					}
+
+					// 检查key是否存在
+					value := containerVal.MapIndex(keyVal)
+					return value.IsValid()
+
+				case reflect.Struct:
+					// 对于结构体，使用reflect缓存检查是否包含指定的字段
+					fieldNameStr, ok := elem.(string)
+					if !ok {
+						return false
+					}
+
+					// 使用全局反射缓存
+					cacheItem := globalReflectCache.analyze(container)
+
+					// 检查字段是否存在
+					_, exists := cacheItem.fields[fieldNameStr]
+					return exists
+
+				case reflect.String:
+					// 对于字符串，检查是否包含指定的子字符串
+					strVal, ok := elem.(string)
+					if !ok {
+						return false
+					}
+					return strings.Contains(containerVal.String(), strVal)
+				default:
 					return false
 				}
-			}
-
-			// 检查key是否存在
-			value := containerVal.MapIndex(keyVal)
-			return value.IsValid()
-
-		case reflect.Struct:
-			// 对于结构体，使用reflect缓存检查是否包含指定的字段
-			fieldNameStr, ok := element.(string)
-			if !ok {
-				return false
-			}
-
-			// 使用全局反射缓存
-			cacheItem := globalReflectCache.analyze(container)
-
-			// 检查字段是否存在
-			_, exists := cacheItem.fields[fieldNameStr]
-			return exists
-
-		default:
-			return false
+			}()
 		}
+
+		return flag
 	})
 
 }

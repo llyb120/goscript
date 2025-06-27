@@ -20,8 +20,8 @@ func TestHasFunction(t *testing.T) {
 	interp := NewInterpreter()
 
 	// 注册内置函数
-	interp.Set("print", func(s any) {
-		fmt.Printf("%v\n", s)
+	interp.Set("print", func(args ...any) {
+		fmt.Println(args...)
 	})
 
 	// 测试数组包含检查
@@ -75,7 +75,7 @@ func TestHasFunction(t *testing.T) {
 		}
 		interp.Set("testMap", testMap)
 
-		result, err := interp.Interpret(`has(testMap, "b")`)
+		result, err := interp.Interpret(`has(testMap, "b", "a", "c")`)
 		if err != nil {
 			t.Fatalf("Error: %v", err)
 		}
@@ -193,8 +193,8 @@ func TestHasIntegration(t *testing.T) {
 	interp := NewInterpreter()
 
 	// 注册内置函数
-	interp.Set("print", func(s any) {
-		fmt.Printf("%v\n", s)
+	interp.Set("print", func(args ...any) {
+		fmt.Println(args...)
 	})
 
 	// 设置测试数据
