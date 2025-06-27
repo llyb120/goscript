@@ -27,6 +27,10 @@ func (i *Interpreter) libs() {
 		return reflect.ValueOf(v).Len()
 	})
 
+	i.Set("print", func(args ...any) {
+		fmt.Println(args...)
+	})
+
 	// has 函数：检查容器是否包含指定的元素或字段
 	// 对于数组和slice：检查是否包含指定的值
 	// 对于map：检查是否包含指定的key

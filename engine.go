@@ -99,7 +99,123 @@ func (i *Interpreter) GetGlobal() any {
 	return i.global
 }
 
+// 将单引号包裹的字符串替换为双引号包裹，同时避免替换注释、其它字符串或字符中的引号
+// 该函数会遍历源代码，识别字符串/注释上下文，只有在顶层遇到单引号时才视为字符串开始/结束
+// 支持反斜杠转义，例如 '\' 或 '\""
+func preprocessSingleQuoteString(src string) string {
+	var b strings.Builder
+	inSingle, inDouble, inBacktick := false, false, false
+	// commentState: 0 = none, 1 = // line, 2 = /* block */
+	commentState := 0
+	for i := 0; i < len(src); i++ {
+		c := src[i]
+
+		// 处理行/块注释结束
+		if commentState == 1 { // 行注释
+			b.WriteByte(c)
+			if c == '\n' {
+				commentState = 0
+			}
+			continue
+		}
+		if commentState == 2 { // 块注释
+			// 检查 */ 结束
+			b.WriteByte(c)
+			if c == '*' && i+1 < len(src) && src[i+1] == '/' {
+				b.WriteByte('/')
+				i++
+				commentState = 0
+			}
+			continue
+		}
+
+		// 当前在字符串中
+		if inSingle || inDouble || inBacktick {
+			if c == '\\' { // 处理转义字符
+				if i+1 < len(src) && src[i+1] == '\'' && inSingle {
+					// 单引号字符串内部的 \' 转为 '
+					b.WriteByte('\'')
+					i++
+					continue
+				}
+				b.WriteByte(c)
+				if i+1 < len(src) {
+					b.WriteByte(src[i+1])
+					i++
+				}
+				continue
+			}
+
+			if inSingle && c == '\'' {
+				b.WriteByte('"') // 结束单引号字符串
+				inSingle = false
+				continue
+			}
+			if inDouble && c == '"' {
+				b.WriteByte(c)
+				inDouble = false
+				continue
+			}
+			if inBacktick && c == '`' {
+				b.WriteByte(c)
+				inBacktick = false
+				continue
+			}
+
+			// 其它字符保持原样
+			if inSingle && c == '"' {
+				b.WriteByte('\\')
+				b.WriteByte('"')
+			} else {
+				b.WriteByte(c)
+			}
+			continue
+		}
+
+		// 不在任何字符串/注释中时处理开始标记
+		if c == '/' && i+1 < len(src) {
+			if src[i+1] == '/' { // 行注释开始
+				b.WriteByte(c)
+				b.WriteByte('/')
+				i++
+				commentState = 1
+				continue
+			}
+			if src[i+1] == '*' { // 块注释开始
+				b.WriteByte(c)
+				b.WriteByte('*')
+				i++
+				commentState = 2
+				continue
+			}
+		}
+
+		if c == '\'' {
+			b.WriteByte('"') // 单引号字符串开始
+			inSingle = true
+			continue
+		}
+		if c == '"' {
+			b.WriteByte(c)
+			inDouble = true
+			continue
+		}
+		if c == '`' {
+			b.WriteByte(c)
+			inBacktick = true
+			continue
+		}
+
+		// 其它字符直接写出
+		b.WriteByte(c)
+	}
+
+	return b.String()
+}
+
 func (i *Interpreter) Interpret(code string) (any, error) {
+	// 预处理单引号字符串
+	code = preprocessSingleQuoteString(code)
 	fset := token.NewFileSet()
 	code = `package main
 	func __main__() any {	
