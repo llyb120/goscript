@@ -84,6 +84,17 @@ func (i *Interpreter) Set(name string, obj any) {
 	}
 }
 
+func (i *Interpreter) Get(name string) any {
+	currentScope := i.scope
+	for currentScope != nil {
+		if v, ok := currentScope.Load(name); ok {
+			return v
+		}
+		currentScope = currentScope.parent
+	}
+	return nil
+}
+
 func (i *Interpreter) SetGlobal(obj any) {
 	refVal := reflect.ValueOf(obj)
 	if refVal.Kind() == reflect.Struct {
