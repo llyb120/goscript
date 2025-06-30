@@ -12,10 +12,12 @@ import (
 
 // 因为类型是有限的，所以可以做一个全局的缓存
 var globalReflectCache = NewReflectCache()
+var emptyReturn = &struct{ emptyReturn bool }{true}
 
 type Function struct {
-	params []*ast.Field
-	body   *ast.BlockStmt
+	params  []*ast.Field
+	results []*ast.Field
+	body    *ast.BlockStmt
 }
 
 type Interpreter struct {
@@ -50,6 +52,51 @@ func NewInterpreter() *Interpreter {
 	interp.libs()
 
 	return interp
+}
+
+// getZeroValue 根据类型返回零值
+func (i *Interpreter) getZeroValue(typeExpr ast.Expr) (any, error) {
+	switch t := typeExpr.(type) {
+	case *ast.Ident:
+		switch t.Name {
+		case "string":
+			return "", nil
+		case "bool":
+			return false, nil
+		case "int", "int32", "int64", "int16", "int8":
+			return 0, nil
+		case "uint", "uint32", "uint64", "uint16", "uint8":
+			return uint(0), nil
+		case "float32", "float64":
+			return 0.0, nil
+		case "byte":
+			return byte(0), nil
+		case "rune":
+			return rune(0), nil
+		case "interface{}":
+			return nil, nil
+		case "error":
+			return nil, nil
+		default:
+			return nil, fmt.Errorf("不支持的类型: %s", t.Name)
+		}
+	case *ast.ArrayType:
+		// 返回空切片
+		return []any{}, nil
+	case *ast.MapType:
+		// 返回空map
+		return make(map[any]any), nil
+	case *ast.StarExpr:
+		// 指针类型零值为nil
+		return nil, nil
+	case *ast.StructType:
+		// 返回空map表示struct
+		return make(map[string]any), nil
+	case *ast.InterfaceType:
+		return nil, nil
+	default:
+		return nil, fmt.Errorf("不支持的类型表达式: %T", t)
+	}
 }
 
 func (i *Interpreter) Fork() *Interpreter {
@@ -1132,7 +1179,9 @@ func or(a, b any) (any, error) {
 // 处理return语句的函数
 func (i *Interpreter) evalReturnStmt(ret *ast.ReturnStmt) (any, error) {
 	if len(ret.Results) == 0 {
-		return nil, nil
+		// 空的return语句，需要返回命名返回值的当前状态
+		// 这里返回一个特殊标记，让调用者知道这是一个空return
+		return emptyReturn, nil
 	}
 	// 目前只处理单个返回值
 	return i.eval(ret.Results[0])
@@ -1185,6 +1234,11 @@ func (i *Interpreter) evalFuncLit(fn *ast.FuncLit) (any, error) {
 		body:   fn.Body,
 	}
 
+	// 处理返回值参数
+	if fn.Type.Results != nil {
+		function.results = fn.Type.Results.List
+	}
+
 	// 返回一个闭包函数
 	return func(args ...any) (any, error) {
 		// 创建新的作用域
@@ -1204,8 +1258,45 @@ func (i *Interpreter) evalFuncLit(fn *ast.FuncLit) (any, error) {
 			newScope.Store(param.Names[0].Name, args[idx])
 		}
 
+		// 初始化命名返回值
+		for _, result := range function.results {
+			if len(result.Names) > 0 {
+				// 有命名返回值，需要初始化为零值
+				for _, name := range result.Names {
+					zeroValue, err := i.getZeroValue(result.Type)
+					if err != nil {
+						return nil, fmt.Errorf("初始化返回值失败: %v", err)
+					}
+					newScope.Store(name.Name, zeroValue)
+				}
+			}
+		}
+
 		// 执行函数体
-		return i.eval(function.body)
+		result, err := i.eval(function.body)
+		if err != nil {
+			return nil, err
+		}
+
+		// 检查是否是空return
+		if result == emptyReturn {
+			result = nil // 将空return标记置为nil
+		}
+
+		// 对于有命名返回值的函数，如果没有显式返回值，返回命名返回值的当前值
+		if len(function.results) > 0 {
+			for _, resultField := range function.results {
+				if len(resultField.Names) > 0 {
+					// 返回第一个命名返回值的当前值
+					name := resultField.Names[0].Name
+					if val, ok := newScope.Load(name); ok {
+						return val, nil
+					}
+				}
+			}
+		}
+
+		return result, nil
 	}, nil
 }
 

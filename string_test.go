@@ -10,6 +10,12 @@ func TestString(t *testing.T) {
 	interp.Interpret(`
 		print('Hello, World \'1\' 23424 !')
 		print("Hello, World 'hohoafa' 23424 !")
+
+		fn := func()(ret string) {
+			ret = "123"
+		}
+
+		print(fn())
 	`)
 
 	fmt.Println(123)
