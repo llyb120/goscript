@@ -14,8 +14,9 @@ import (
 var globalReflectCache = NewReflectCache()
 
 type Function struct {
-	params []*ast.Field
-	body   *ast.BlockStmt
+	params  []*ast.Field
+	results []*ast.Field
+	body    *ast.BlockStmt
 }
 
 type Interpreter struct {
@@ -50,6 +51,18 @@ func NewInterpreter() *Interpreter {
 	interp.libs()
 
 	return interp
+}
+
+// getZeroValue 根据类型返回零值，使用反射机制
+func (i *Interpreter) getZeroValue(typeExpr ast.Expr) (any, error) {
+	reflectType, err := i.resolveType(typeExpr)
+	if err != nil {
+		return nil, err
+	}
+
+	// 使用反射获取零值
+	zeroValue := reflect.Zero(reflectType)
+	return zeroValue.Interface(), nil
 }
 
 func (i *Interpreter) Fork() *Interpreter {
@@ -1130,9 +1143,13 @@ func or(a, b any) (any, error) {
 }
 
 // 处理return语句的函数
+// 定义一个特殊的空返回标记
+var emptyReturnMarker = &struct{ marker string }{"empty_return"}
+
 func (i *Interpreter) evalReturnStmt(ret *ast.ReturnStmt) (any, error) {
 	if len(ret.Results) == 0 {
-		return nil, nil
+		// 空的return语句，返回特殊标记
+		return emptyReturnMarker, nil
 	}
 	// 目前只处理单个返回值
 	return i.eval(ret.Results[0])
@@ -1185,6 +1202,11 @@ func (i *Interpreter) evalFuncLit(fn *ast.FuncLit) (any, error) {
 		body:   fn.Body,
 	}
 
+	// 处理返回值参数
+	if fn.Type.Results != nil {
+		function.results = fn.Type.Results.List
+	}
+
 	// 返回一个闭包函数
 	return func(args ...any) (any, error) {
 		// 创建新的作用域
@@ -1204,8 +1226,44 @@ func (i *Interpreter) evalFuncLit(fn *ast.FuncLit) (any, error) {
 			newScope.Store(param.Names[0].Name, args[idx])
 		}
 
+		// 初始化命名返回值
+		for _, result := range function.results {
+			if len(result.Names) > 0 {
+				// 有命名返回值，需要初始化为零值
+				for _, name := range result.Names {
+					zeroValue, err := i.getZeroValue(result.Type)
+					if err != nil {
+						return nil, fmt.Errorf("初始化返回值失败: %v", err)
+					}
+					newScope.Store(name.Name, zeroValue)
+				}
+			}
+		}
+
 		// 执行函数体
-		return i.eval(function.body)
+		result, err := i.eval(function.body)
+		if err != nil {
+			return nil, err
+		}
+
+		// 检查是否是空return或函数自然结束，且有命名返回值
+		if (result == emptyReturnMarker || result == nil) && len(function.results) > 0 {
+			for _, resultField := range function.results {
+				if len(resultField.Names) > 0 {
+					// 返回第一个命名返回值的当前值
+					name := resultField.Names[0].Name
+					if val, ok := newScope.Load(name); ok {
+						return val, nil
+					}
+				}
+			}
+		}
+
+		// 如果不是空return标记，直接返回结果
+		if result == emptyReturnMarker {
+			return nil, nil
+		}
+		return result, nil
 	}, nil
 }
 
